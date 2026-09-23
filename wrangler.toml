@@ -1,0 +1,5 @@
+# Cloudflare Pages configuration for ARTech POS
+# Deploy with:  npx wrangler login && npm run deploy
+name = "artech-pos"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "dist"
