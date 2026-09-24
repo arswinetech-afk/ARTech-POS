@@ -1,0 +1,16 @@
+{
+  "name": "artech-pos-video-src",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generates the ARTech POS marketing video from code (SVG frames + synthesized audio + ffmpeg encode)",
+  "scripts": {
+    "render": "node render.js",
+    "probe": "node probe.js",
+    "audio": "node audio.js",
+    "vo": "node vo.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "pngjs": "^7.0.0"
+  }
+}
