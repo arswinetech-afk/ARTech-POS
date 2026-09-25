@@ -5,7 +5,7 @@ const { TL } = require('./scenes');
 const A = require('./audio');
 
 const SR = 44100;
-const FF = '/home/user/tools/ffmpeg-dist/bin/ffmpeg';
+const FF = process.env.FFMPEG || '/home/user/tools/ffmpeg-dist/bin/ffmpeg';
 const TEMPO = 1.34;          // energetic ad read
 const GAP_MAX = 0.26;        // silences longer than this get squeezed
 const GAP_KEEP = 0.17;
@@ -87,7 +87,7 @@ const PLACEMENT = [ // [scene key, offset in scene, label, pre-trim seconds]
 
 const lines = [];
 PLACEMENT.forEach(([key, off, label, pre], i) => {
-  const src = `/home/user/tools/video/vo/vo${i + 1}.wav`;
+  const src = `/home/user/ARTech-POS/marketing/voiceover/vo${i + 1}.wav`;
   let { data, rate } = readWav(src);
   if (pre) data = data.slice(Math.floor(pre * rate));
   const squeezed = desilence(data, rate);
@@ -127,5 +127,7 @@ let peak = 0;
 for (let i = 0; i < A.N; i++) peak = Math.max(peak, Math.abs(mixL[i]), Math.abs(mixR[i]));
 const g = peak > 0 ? 0.92 / peak : 1;
 for (let i = 0; i < A.N; i++) { mixL[i] *= g; mixR[i] *= g; }
-A.writeWav('/home/user/tools/video/audio/final_audio.wav', mixL, mixR);
-console.log('final audio written:', (A.N / SR).toFixed(2) + 's', (fs.statSync('/home/user/tools/video/audio/final_audio.wav').size / 1048576).toFixed(1) + 'MB');
+const outWav = '/home/user/ARTech-POS/marketing/audio/final_audio.wav';
+fs.mkdirSync(require('path').dirname(outWav), { recursive: true });
+A.writeWav(outWav, mixL, mixR);
+console.log('final audio written:', (A.N / SR).toFixed(2) + 's', (fs.statSync(outWav).size / 1048576).toFixed(1) + 'MB');

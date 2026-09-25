@@ -4,7 +4,7 @@ const S = require('./scenes');
 const K = require('./core');
 
 const times = process.argv.slice(2).map(Number);
-const outDir = '/home/user/tools/video/probe';
+const outDir = process.env.PROBE_DIR || '/tmp/qa';
 fs.mkdirSync(outDir, { recursive: true });
 for (const t of times) {
   const svg = S.frame(t);

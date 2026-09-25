@@ -150,50 +150,38 @@ function scene1(t) {
 function scene2(t) {
   const [a, b] = TL.s2, d = t - a;
   const o = [];
-  // circuit traces converging
+  const cx = W / 2, cy = 470, R0 = 318;
+  // circuit traces that meet the circle — they never cross the badge
   const traces = [
-    `M0 0 C 300 0 420 240 700 300`, `M1920 0 C 1620 0 1500 240 1220 300`,
-    `M0 1080 C 300 1080 420 840 700 740`, `M1920 1080 C 1620 1080 1500 840 1220 740`,
+    `M0 80 C 280 80 420 200 640 330`, `M1920 80 C 1640 80 1500 200 1280 330`,
+    `M0 1000 C 280 1000 420 860 640 610`, `M1920 1000 C 1640 1000 1500 860 1280 610`,
   ];
   traces.forEach((dpath, i) => {
-    const p = seg(d, 0.02 + i * 0.05, 0.5 + i * 0.05, K.easeOutCubic);
+    const p = seg(d, 0.02 + i * 0.05, 0.48 + i * 0.05, K.easeOutCubic);
     const len = 1500;
-    o.push(P(dpath, { stroke: i % 2 ? C.green : C.teal, sw: 3, dash: `${n(len * p)} ${n(len)}`, opacity: 0.8 }));
+    o.push(P(dpath, { stroke: i % 2 ? C.green : C.teal, sw: 3, dash: `${n(len * p)} ${n(len)}`, opacity: 0.75 }));
     const end = pathPoint(dpath, p);
     if (end) o.push(C_(end[0], end[1], 6, { fill: i % 2 ? C.green : C.teal, opacity: 0.9 * p }));
   });
-  // glow
-  o.push(C_(W / 2, 470, 380, { fill: 'url(#gGlow)', opacity: 0.55 * seg(d, 0.1, 0.7, K.easeOutCubic) }));
-  // logo card
-  const lp = seg(d, 0.18, 0.72, K.easeOutBack);
-  const lw = 620, lh = lw / U.LOGO_AR;
-  o.push(GRP([
-    R(0, 0, lw + 56, lh + 56, { fill: '#F7FBFC', rx: 34 }),
-    R(28, 28, lw, lh, { fill: 'none', rx: 20, stroke: 'rgba(11,34,51,0.08)' }),
-    `<image href="${U.LOGO_HREF}" x="28" y="28" width="${n(lw)}" height="${n(lh)}" preserveAspectRatio="xMidYMid meet"/>`,
-  ], {
-    transform: `translate(${n(W / 2 - (lw + 56) / 2)},${n(452 - (lh + 56) / 2)}) scale(${n(0.55 + 0.45 * lp)})`,
-    opacity: clamp(lp * 1.6),
+  // circular lockup scales in — logo is clipped to the round disc, not a rectangular card
+  const lp = seg(d, 0.12, 0.62, K.easeOutBack);
+  const sc = 0.62 + 0.38 * lp;
+  o.push(GRP([U.circularBadge(cx, cy, R0, t, { id: 's2' })], {
+    transform: `translate(${n(cx)},${n(cy)}) scale(${n(sc)}) translate(${n(-cx)},${n(-cy)})`,
+    opacity: clamp(lp * 1.7),
   }));
-  // kicker + tagline
-  const kp = seg(d, 0.75, 1.1, K.easeOutCubic);
-  o.push(T(W / 2, 700, 'OFFLINE-FIRST POINT OF SALE', { size: 25, fill: C.teal, anchor: 'middle', spacing: 7, opacity: kp }));
-  const words = ['Manage.', 'Sell.', 'Analytics.'];
-  const cols = [C.teal, C.green, C.ink];
-  let wx = W / 2 - (MEASURE.bold('Manage. Sell. Analytics.', 40, 5) + 2 * 26) / 2;
-  words.forEach((wd, i) => {
-    const wp = seg(d, 0.9 + i * 0.12, 1.3 + i * 0.12, K.easeOutBack);
-    o.push(GRP([T(0, 0, wd, { size: 40, fill: cols[i], spacing: 5 })],
-      { transform: `translate(${n(wx)},${n(756)}) scale(${n(0.6 + 0.4 * wp)})`, opacity: clamp(wp * 1.5) }));
-    wx += MEASURE.bold(wd, 40, 5) + 26;
-  });
-  // sparkles
+  // caption sits WELL below the circle so nothing overlaps the badge
+  const kp = seg(d, 0.50, 0.85, K.easeOutCubic);
+  o.push(T(cx, cy + R0 + 64, 'OFFLINE-FIRST POINT OF SALE', {
+    size: 22, fill: C.teal, anchor: 'middle', spacing: 6.5, opacity: kp,
+  }));
+  // sparkles orbit outside the disc
   for (let i = 0; i < 7; i++) {
     const sp = ((d * 1.4 + i * 0.19) % 1);
     const ang = i * 2.399 + d * 0.4;
-    const rad = 200 + sp * 260;
-    o.push(GRP([U.icon('sparkle', 0, 0, 20 + 16 * (1 - sp), i % 2 ? C.green : C.teal, { opacity: (1 - sp) * 0.9 })],
-      { transform: `translate(${n(W / 2 + Math.cos(ang) * rad * 1.5)},${n(452 + Math.sin(ang) * rad * 0.7)})` }));
+    const rad = R0 + 36 + sp * 90;
+    o.push(GRP([U.icon('sparkle', 0, 0, 16 + 12 * (1 - sp), i % 2 ? C.green : C.teal, { opacity: (1 - sp) * 0.85 })],
+      { transform: `translate(${n(cx + Math.cos(ang) * rad)},${n(cy + Math.sin(ang) * rad * 0.78)})` }));
   }
   const ex = seg(d, b - a - 0.15, b - a, K.easeInCubic);
   return GRP(o, { opacity: 1 - ex * 0.5 }) + flash(t, a + 1.62, 0.15, '#FFFFFF', 0.7);
@@ -515,43 +503,40 @@ function scene6(t) {
 function scene7(t) {
   const [a, b] = TL.s7, d = t - a;
   const o = [];
+  const cx = W / 2, cy = 368, R0 = 248;
   const lp = seg(d, 0.02, 0.4, K.easeOutBack);
-  const lw = 560, lh = lw / U.LOGO_AR;
-  o.push(C_(W / 2, 400, 300, { fill: 'url(#gGlow)', opacity: 0.42 }));
-  o.push(GRP([
-    R(0, 0, lw + 52, lh + 52, { fill: '#F7FBFC', rx: 32 }),
-    `<image href="${U.LOGO_HREF}" x="26" y="26" width="${n(lw)}" height="${n(lh)}" preserveAspectRatio="xMidYMid meet"/>`,
-  ], { transform: `translate(${n(W / 2 - (lw + 52) / 2)},${n(430 - (lh + 52) / 2)}) scale(${n(0.6 + 0.4 * lp)})`, opacity: clamp(lp * 1.6) }));
-
+  const sc = 0.7 + 0.3 * lp;
+  o.push(GRP([U.circularBadge(cx, cy, R0, t, { id: 's7' })], {
+    transform: `translate(${n(cx)},${n(cy)}) scale(${n(sc)}) translate(${n(-cx)},${n(-cy)})`,
+    opacity: clamp(lp * 1.6),
+  }));
+  // tagline + CTA sit below the circle — never overlapping the badge
   const words = ['Manage.', 'Sell.', 'Analytics.'];
   const cols = [C.teal, C.green, C.ink];
-  const totalW = MEASURE.bold('Manage. Sell. Analytics.', 38, 5) + 2 * 26;
+  const totalW = MEASURE.bold('Manage. Sell. Analytics.', 34, 4) + 2 * 22;
   let wx = W / 2 - totalW / 2;
   words.forEach((wd, i) => {
-    const wp = seg(d, 0.3 + i * 0.1, 0.62 + i * 0.1, K.easeOutBack);
-    o.push(GRP([T(0, 0, wd, { size: 38, fill: cols[i], spacing: 5 })],
-      { transform: `translate(${n(wx)},${n(672)}) scale(${n(0.6 + 0.4 * wp)})`, opacity: clamp(wp * 1.5) }));
-    wx += MEASURE.bold(wd, 38, 5) + 26;
+    const wp = seg(d, 0.28 + i * 0.1, 0.58 + i * 0.1, K.easeOutBack);
+    o.push(GRP([T(0, 0, wd, { size: 34, fill: cols[i], spacing: 4 })],
+      { transform: `translate(${n(wx)},${n(cy + R0 + 58)}) scale(${n(0.6 + 0.4 * wp)})`, opacity: clamp(wp * 1.5) }));
+    wx += MEASURE.bold(wd, 34, 4) + 22;
   });
-  // CTA chip
   const cp = seg(d, 0.5, 0.85, K.easeOutBack);
   o.push(GRP([
     R(0, 0, 560, 66, { fill: C.grad, rx: 33 }),
     U.icon('bolt', 46, 33, 26, '#06251F'),
     T(80, 42, 'Start free — 15-day trial', { size: 26, fill: '#06251F', spacing: 1 }),
-  ], { transform: `translate(${n(W / 2 - 280)},${n(740)}) scale(${n(0.75 + 0.25 * cp)})`, opacity: clamp(cp * 1.5) }));
-  // url + price
+  ], { transform: `translate(${n(W / 2 - 280)},${n(cy + R0 + 88)}) scale(${n(0.75 + 0.25 * cp)})`, opacity: clamp(cp * 1.5) }));
   const up = seg(d, 0.72, 1.0, K.easeOutCubic);
-  o.push(T(W / 2, 862, 'artech-pos.pages.dev', { size: 24, fill: C.ink2, anchor: 'middle', spacing: 1.5, opacity: up }));
-  o.push(T(W / 2, 898, 'Plans from ₱149 / month', { size: 19, fill: C.muted, anchor: 'middle', font: FONT_REG, weight: 600, opacity: up }));
-  // sparkles
+  o.push(T(W / 2, cy + R0 + 188, 'artech-pos.pages.dev', { size: 24, fill: C.ink2, anchor: 'middle', spacing: 1.5, opacity: up }));
+  o.push(T(W / 2, cy + R0 + 224, 'Plans from ₱149 / month', { size: 19, fill: C.muted, anchor: 'middle', font: FONT_DEJA, weight: 700, opacity: up }));
   for (let i = 0; i < 10; i++) {
     const sp = ((d * 1.1 + i * 0.17) % 1);
     const ang = i * 2.399 + d * 0.35;
-    o.push(GRP([U.icon('sparkle', 0, 0, 16 + 18 * (1 - sp), i % 2 ? C.green : C.teal, { opacity: (1 - sp) * 0.8 })],
-      { transform: `translate(${n(W / 2 + Math.cos(ang) * (330 + sp * 300))},${n(430 + Math.sin(ang) * (170 + sp * 160))})` }));
+    const rad = R0 + 28 + sp * 120;
+    o.push(GRP([U.icon('sparkle', 0, 0, 14 + 14 * (1 - sp), i % 2 ? C.green : C.teal, { opacity: (1 - sp) * 0.75 })],
+      { transform: `translate(${n(cx + Math.cos(ang) * rad)},${n(cy + Math.sin(ang) * rad * 0.72)})` }));
   }
-  // end fade
   const fd = seg(d, b - a - 0.35, b - a, K.easeInCubic);
   return GRP(o, { opacity: 1 }) + R(0, 0, W, H, { fill: '#000', opacity: fd });
 }
@@ -615,7 +600,7 @@ function frame(t) {
   else if (inS('s6')) body += scene6(t);
   else if (inS('s7')) body += scene7(t);
   else if (t >= TL.s7[1]) body += scene7(TL.s7[1] - 0.001);
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${K.defs()}${body}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${K.defs()}${R(0, 0, W, H, { fill: '#050C12' })}${body}</svg>`;
 }
 
 module.exports = { frame, TL };

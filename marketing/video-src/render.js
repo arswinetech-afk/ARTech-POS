@@ -15,7 +15,7 @@ fs.mkdirSync(path.dirname(OUT), { recursive: true });
 const args = [
   '-y', '-v', 'error', '-stats',
   '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `1920x1080`, '-r', String(FPS), '-i', 'pipe:0',
-  '-i', '/home/user/tools/video/audio/final_audio.wav',
+  '-i', '/home/user/ARTech-POS/marketing/audio/final_audio.wav',
   '-map', '0:v', '-map', '1:a',
   '-c:v', 'libx264', '-preset', 'fast', '-crf', '17', '-tune', 'animation',
   '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-level', '4.0',
@@ -24,7 +24,8 @@ const args = [
   '-movflags', '+faststart', '-shortest',
   OUT,
 ];
-const ff = spawn('/home/user/tools/ffmpeg-dist/bin/ffmpeg', args, { stdio: ['pipe', 'inherit', 'inherit'] });
+const FF = process.env.FFMPEG || '/home/user/tools/ffmpeg-dist/bin/ffmpeg';
+const ff = spawn(FF, args, { stdio: ['pipe', 'inherit', 'inherit'] });
 let stopped = false;
 ff.on('exit', (code) => { stopped = true; console.log('ffmpeg exited with', code); });
 ff.stdin.on('error', e => { if (!stopped) console.error('stdin error', e.message); });

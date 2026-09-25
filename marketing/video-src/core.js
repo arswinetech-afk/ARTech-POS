@@ -14,10 +14,10 @@ const C = {
   grad: 'url(#gAccent)', gradSoft: 'url(#gAccentSoft)',
 };
 
-const FONT_BOLD = 'Open Sans', FONT_REG = 'Open Sans', FONT_DEJA = 'DejaVu Sans';
+const FONT_BOLD = 'DejaVu Sans', FONT_REG = 'DejaVu Sans', FONT_DEJA = 'DejaVu Sans';
 const FONT_FILES = [
-  '/home/user/tools/chromium/fonts/fonts/Open_Sans/OpenSans-Bold.ttf',
-  '/home/user/tools/chromium/fonts/fonts/Open_Sans/OpenSans-Regular.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
 ];
@@ -92,12 +92,14 @@ function TR(x, y, runs, o = {}) {
   return s + '</text>';
 }
 function GRP(children, o = {}) {
-  const { transform = null, opacity = 1, clip = null } = o;
+  const { transform = null, opacity = 1, clip = null, mask = null, extra = '' } = o;
   let s = '<g';
   if (transform) s += ` transform="${transform}"`;
   if (opacity !== 1) s += ` opacity="${n(opacity)}"`;
   if (clip) s += ` clip-path="url(#${clip})"`;
-  return s + '>' + children.join('') + '</g>';
+  if (mask) s += ` mask="url(#${mask})"`;
+  if (extra) s += ` ${extra}`;
+  return s + '>' + (Array.isArray(children) ? children.join('') : children) + '</g>';
 }
 
 // ---------- defs (gradients / filters) ----------
@@ -127,6 +129,15 @@ function defs() {
 <radialGradient id="gGlowG" cx="0.5" cy="0.5" r="0.5">
   <stop offset="0" stop-color="${C.green}" stop-opacity="0.5"/><stop offset="1" stop-color="${C.green}" stop-opacity="0"/>
 </radialGradient>
+<radialGradient id="gBadge" cx="0.5" cy="0.42" r="0.62">
+  <stop offset="0" stop-color="#FFFFFF"/><stop offset="0.72" stop-color="#F4FBFA"/><stop offset="1" stop-color="#E7F6F1"/>
+</radialGradient>
+<radialGradient id="gDisc" cx="0.5" cy="0.5" r="0.5">
+  <stop offset="0" stop-color="#6FE8D4"/><stop offset="0.45" stop-color="#2FB8A8"/><stop offset="1" stop-color="#157A78"/>
+</radialGradient>
+<linearGradient id="gRing" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="#7BD65A"/><stop offset="0.45" stop-color="#3FC8B4"/><stop offset="1" stop-color="#2AA79B"/>
+</linearGradient>
 <linearGradient id="gFade" x1="0" y1="0" x2="0" y2="1">
   <stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.45"/>
 </linearGradient>

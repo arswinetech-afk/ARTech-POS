@@ -8,7 +8,7 @@
 | **Format** | MP4 · H.264 (High profile) · 1920×1080 · 30 fps |
 | **Audio** | AAC-LC · 48 kHz stereo · 192 kbps (voice-over + music + SFX) |
 | **Size** | ~3.1 MB |
-| **Branding** | `public/brand/logo.png` (logo card, opening + closing) |
+| **Branding** | `public/brand/logo.png` adapted into a **circular lockup** (opening + closing) — the mark fills a round badge, it is not a rectangle dropped onto a disc |
 
 ## Storyboard
 
@@ -17,7 +17,7 @@ All cuts land on the music grid (112.5 BPM, beat = 0.533 s).
 | Time | Scene | What it shows |
 |---|---|---|
 | 0.00 – 2.67 | **Hook** | "LONG LINES?" → "NO INTERNET?" → **"NO PROBLEM."** with a queue of customers and a dying Wi-Fi icon |
-| 2.67 – 4.27 | **Logo reveal** | Circuit traces converge, logo card scales in, tagline *Manage. Sell. Analytics.* |
+| 2.67 – 4.27 | **Logo reveal** | Circuit traces meet a spinning circular badge; the ARTech POS mark is clipped to the round disc (no rectangular card) |
 | 4.27 – 7.47 | **Desktop POS** | Full desktop POS: search + barcode scan, items ringing into the cart, live total, **Charge → cha-ching + receipt prints** |
 | 7.47 – 11.73 | **Hold** | A second customer arrives → cashier taps **Hold** (F8) → sale moves to the "On hold" tray → next customer is served → held sale is **resumed** |
 | 11.73 – 14.93 | **Offline** | Wi-Fi dies → **"NO INTERNET"** banner → sales keep ringing up → *3 sales queued locally* → back online → **synced to the cloud** |
@@ -59,3 +59,4 @@ The timeline in `scenes.js` (`TL`) is the single source of truth — scene cuts,
 
 - `poster-cta.png` — closing frame (use as the end-card / thumbnail)
 - `poster-desktop.png` — the desktop POS hero frame
+- `poster-logo.png` — circular brand lockup (opening badge)

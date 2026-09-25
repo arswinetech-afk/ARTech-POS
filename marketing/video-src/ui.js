@@ -1,13 +1,123 @@
 // ui.js — POS screen mockup, device frames, icons, logo, receipt
 const fs = require('fs');
+const { PNG } = require('pngjs');
 const K = require('./core');
 const { R, C_, P, T, TR, GRP, C, FONT_BOLD, FONT_REG, FONT_DEJA, MEASURE, n } = K;
 const esc = K.esc;
 
 // ---------- logo ----------
-const LOGO_B64 = fs.readFileSync('/home/user/ARTech-POS/public/brand/logo.png').toString('base64');
+const LOGO_PATH = '/home/user/ARTech-POS/public/brand/logo.png';
+const LOGO_B64 = fs.readFileSync(LOGO_PATH).toString('base64');
 const LOGO_HREF = `data:image/png;base64,${LOGO_B64}`;
 const LOGO_AR = 720 / 394;
+
+// Keep only the AR mark + tablet + wordmark. Drop the landscape rounded-rect
+// frame and the bottom tagline (redrawn as crisp SVG inside the circle).
+function stripLogoFrame(pngBuf) {
+  const img = PNG.sync.read(pngBuf);
+  const W = img.width, H = img.height, src = img.data;
+  // interior of the original lockup (outside this is the ~16px frame + tagline)
+  const x0 = 42, y0 = 56, x1 = 678, y1 = 322;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (x < x0 || x > x1 || y < y0 || y > y1) src[(y * W + x) * 4 + 3] = 0;
+    }
+  }
+  let minX = W, minY = H, maxX = 0, maxY = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (src[(y * W + x) * 4 + 3] > 12) {
+        if (x < minX) minX = x; if (y < minY) minY = y;
+        if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const pad = 8;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(W - 1, maxX + pad); maxY = Math.min(H - 1, maxY + pad);
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const out = new PNG({ width: cw, height: ch });
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const si = ((minY + y) * W + (minX + x)) * 4, di = (y * cw + x) * 4;
+      out.data[di] = src[si]; out.data[di + 1] = src[si + 1];
+      out.data[di + 2] = src[si + 2]; out.data[di + 3] = src[si + 3];
+    }
+  }
+  stripLogoFrame._ar = cw / ch;
+  stripLogoFrame._size = [cw, ch];
+  return PNG.sync.write(out);
+}
+const LOGO_ART_BUF = stripLogoFrame(fs.readFileSync(LOGO_PATH));
+const LOGO_ART_HREF = `data:image/png;base64,${LOGO_ART_BUF.toString('base64')}`;
+const LOGO_ART_AR = stripLogoFrame._ar;
+
+// Circular brand lockup: spinning groove RING + circular white label the artwork lives in.
+// The logo is clipped to the circle so it adapts to the round background (no rectangular card).
+function circularBadge(cx, cy, r, t, o = {}) {
+  const id = o.id || 'badge';
+  const spin = (o.spin == null ? 1 : o.spin);
+  const rot = (t * 42 * spin) % 360;
+  const rot2 = (-t * 28 * spin) % 360;
+  const inner = r * 0.78;                 // white circular label
+  const ringW = Math.max(7, r * 0.034);
+  // artwork sized to fill the circular label (width-led, corners stay inside)
+  const artW = inner * 1.62;
+  const artH = artW / LOGO_ART_AR;
+  const grooves = [];
+  const nRings = 22;
+  for (let i = 0; i < nRings; i++) {
+    const p = i / (nRings - 1);
+    const rr = r * (0.80 + 0.20 * p);
+    const op = 0.18 + 0.55 * Math.abs(Math.sin(i * 0.9 + 0.4));
+    const col = i % 3 === 0 ? '#9BE86A' : (i % 2 ? '#5EE0CC' : '#2AA79B');
+    grooves.push(C_(0, 0, rr, { stroke: col, sw: i % 4 === 0 ? 2.4 : 1.15, opacity: op }));
+  }
+  // sweeping highlight on the groove ring
+  const sweep = (t * 1.4) % 1;
+  const a0 = sweep * Math.PI * 2;
+  const gx = Math.cos(a0) * r * 0.92, gy = Math.sin(a0) * r * 0.92;
+  const parts = [
+    `<defs>
+      <clipPath id="clip${id}"><circle cx="0" cy="0" r="${n(inner)}"/></clipPath>
+      <mask id="mask${id}">
+        <rect x="${n(-r * 1.2)}" y="${n(-r * 1.2)}" width="${n(r * 2.4)}" height="${n(r * 2.4)}" fill="black"/>
+        <circle cx="0" cy="0" r="${n(r)}" fill="white"/>
+        <circle cx="0" cy="0" r="${n(inner + ringW * 0.15)}" fill="black"/>
+      </mask>
+    </defs>`,
+    // outer glow
+    C_(0, 0, r * 1.28, { fill: 'url(#gGlow)', opacity: 0.55 }),
+    // spinning groove disc (full) then masked to an annulus so it frames the label
+    GRP([
+      C_(0, 0, r, { fill: 'url(#gDisc)' }),
+      GRP(grooves, { transform: `rotate(${n(rot)})` }),
+      C_(gx, gy, r * 0.22, { fill: '#E8FFF6', opacity: 0.18 }),
+    ], { mask: `mask${id}` }),
+    // circular white label — this IS the round background the logo adapts to
+    GRP([
+      C_(0, 0, inner, { fill: 'url(#gBadge)' }),
+      // very faint concentric texture on the label so it feels of-a-piece with the disc
+      ...[0.42, 0.62, 0.82].map((k, i) => C_(0, 0, inner * k, { stroke: '#3FC8B4', sw: 1, opacity: 0.07 + i * 0.02 })),
+      `<image href="${LOGO_ART_HREF}" x="${n(-artW / 2)}" y="${n(-artH / 2 - inner * 0.04)}" width="${n(artW)}" height="${n(artH)}" preserveAspectRatio="xMidYMid meet"/>`,
+      T(0, artH / 2 + inner * 0.02, 'Manage. Sell. Analytics.', {
+        size: Math.max(13, inner * 0.092), fill: '#1B3A4C', anchor: 'middle', font: FONT_REG, weight: 600, spacing: 0.6,
+      }),
+    ], { clip: `clip${id}` }),
+    // brand ring between label and grooves
+    C_(0, 0, inner + ringW * 0.35, { stroke: 'url(#gRing)', sw: ringW, opacity: 1 }),
+    C_(0, 0, inner - 1.2, { stroke: 'rgba(255,255,255,0.7)', sw: 2.2, opacity: 0.9 }),
+    C_(0, 0, r, { stroke: 'rgba(232,255,246,0.35)', sw: 1.6 }),
+    // orbit ticks
+    GRP([
+      C_(0, -r * 1.06, 3.2, { fill: C.green }),
+      C_(r * 1.06, 0, 2.4, { fill: C.teal }),
+      C_(0, r * 1.06, 3.2, { fill: C.teal }),
+      C_(-r * 1.06, 0, 2.4, { fill: C.green }),
+    ], { transform: `rotate(${n(rot2)})` }),
+  ];
+  return GRP(parts, { transform: `translate(${n(cx)},${n(cy)})`, opacity: o.opacity == null ? 1 : o.opacity });
+}
 
 // ---------- icons (drawn centered at cx,cy, sized to fit `s` box) ----------
 function icon(name, cx, cy, s, color = C.ink, o = {}) {
@@ -362,4 +472,4 @@ function drawReceipt(x, y, w, st = {}) {
   return o.join('');
 }
 
-module.exports = { icon, productGlyph, person, PEOPLE_COLORS, pill, drawPOS, drawMonitor, drawLaptop, drawPhone, drawReceipt, LOGO_HREF, LOGO_AR, PRODUCTS, peso };
+module.exports = { icon, productGlyph, person, PEOPLE_COLORS, pill, drawPOS, drawMonitor, drawLaptop, drawPhone, drawReceipt, circularBadge, LOGO_HREF, LOGO_ART_HREF, LOGO_AR, PRODUCTS, peso };
