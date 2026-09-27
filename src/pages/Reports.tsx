@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Navigate, useSearchParams } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { Download, DollarSign, TrendingUp, Wallet, ShoppingBag, Users, Receipt, Ban, Trophy, Lightbulb, AlertCircle, CheckCircle2, MinusCircle, Search, Package, Cloud, Undo2 } from 'lucide-react'
+import { Download, DollarSign, TrendingUp, Wallet, ShoppingBag, Users, Receipt, Ban, Trophy, Lightbulb, AlertCircle, CheckCircle2, MinusCircle, Search, Package, Cloud, Undo2, HandCoins } from 'lucide-react'
 import { format, startOfDay, endOfDay, subDays, startOfMonth, startOfYear, differenceInDays, subMonths, endOfMonth, parseISO } from 'date-fns'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line, Legend } from 'recharts'
 import { db } from '../lib/db'
 import { useAppStore, usePermission, memberName } from '../store/app'
 import { supabase, isOnline } from '../lib/supabase'
 import { SALES_WINDOW_DAYS } from '../lib/sync'
-import { Card, Chip, Segmented, Input, Button, Badge, EmptyState, StatCard, Confirm } from '../components/ui'
+import { Card, Chip, Segmented, Input, Button, Badge, EmptyState, StatCard, Confirm, Modal } from '../components/ui'
 import ReceiptModal from '../components/ReceiptModal'
 import { ReturnSlipModal } from '../components/ReturnModal'
 import { voidSale } from '../lib/repo'
 import { peso, num, cls, fmtRelative, downloadText, toCSV, round2 } from '../lib/format'
 import { toast } from '../store/ui'
-import type { Sale, SaleReturn, CreditPayment } from '../lib/types'
+import type { Sale, SaleReturn, CreditPayment, Expense } from '../lib/types'
 
 type RangeKey = 'today' | '7d' | '30d' | 'month' | 'year' | 'custom'
 
@@ -102,6 +102,7 @@ export default function Reports() {
     const monthly = Array.from({ length: 6 }, (_, i) => { const m = subMonths(new Date(), 5 - i); const a = startOfMonth(m).toISOString(), b = endOfMonth(m).toISOString(); const ss = allRecent.filter((s) => s.status === 'active' && s.created_at >= a && s.created_at <= b); const rr = recentReturns.filter((r) => r.created_at >= a && r.created_at <= b); return { month: format(m, 'MMM yy'), revenue: round2(ss.reduce((x, s) => x + Number(s.total), 0) - rr.reduce((x, r) => x + Number(r.refund_total), 0)), gross: round2(ss.reduce((x, s) => x + Number(s.profit), 0) - rr.reduce((x, r) => x + Number(r.refund_total) - Number(r.restock_cost), 0)) } })
     return {
       sales: sales.sort((a, b) => b.created_at.localeCompare(a.created_at)), returns: returns.sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      expenseRows: expenses.sort((a, b) => b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at)),
       summary: summarize(sales, exp, returns, payments), prev: summarize(prevSales, prevExpenses.reduce((a, e) => a + Number(e.amount), 0), prevReturns, prevPayments),
       receivables: credits.filter((c) => !c.settled).reduce((a, c) => a + Number(c.amount) - Number(c.paid), 0),
       inventoryValue: products.reduce((a, p) => a + Number(p.cost) * Number(p.stock), 0),
@@ -156,6 +157,9 @@ export default function Reports() {
   const netMargin = summary.gross ? (net / summary.gross) * 100 : 0
   const delta = (a: number, b: number) => (b === 0 ? (a === 0 ? 0 : 100) : ((a - b) / Math.abs(b)) * 100)
 
+  const [detail, setDetail] = useState<DetailKind | null>(null)
+  const periodLabel = range === 'today' ? 'today' : range === '7d' ? 'the last 7 days' : range === '30d' ? 'the last 30 days' : range === 'month' ? 'this month' : range === 'year' ? 'this year' : `${format(from, 'MMM d')} – ${format(to, 'MMM d, yyyy')}`
+
   if (!store) return null
   if (!canView) return <Navigate to="/" replace />
   return (
@@ -173,7 +177,7 @@ export default function Reports() {
 
       {tab === 'dashboard' && (
         <div className="space-y-3 animate-fade-in">
-          <Card className={cls('p-4 flex items-center justify-between border-l-4', status === 'profit' ? 'border-l-brand-500 bg-brand-50/50' : status === 'loss' ? 'border-l-red-500 bg-red-50/50' : 'border-l-amber-400 bg-amber-50/50')}>
+          <Card onClick={() => setDetail('net')} className={cls('p-4 flex items-center justify-between border-l-4', status === 'profit' ? 'border-l-brand-500 bg-brand-50/50' : status === 'loss' ? 'border-l-red-500 bg-red-50/50' : 'border-l-amber-400 bg-amber-50/50')}>
             <div className="flex items-center gap-3">
               {status === 'profit' ? <CheckCircle2 className="text-brand-600" /> : status === 'loss' ? <AlertCircle className="text-red-600" /> : <MinusCircle className="text-amber-500" />}
               <div><div className="font-semibold text-sm">{status === 'profit' ? 'Profitable' : status === 'loss' ? 'Operating at a loss' : status === 'even' ? 'Break-even' : 'No activity yet'}</div><div className="text-xs text-slate-600">{status === 'profit' ? `Net margin ${netMargin.toFixed(1)}% for this period.` : status === 'loss' ? 'Expenses exceed gross profit for this period.' : 'Your business is neither earning nor losing.'}</div></div>
@@ -182,14 +186,14 @@ export default function Reports() {
           </Card>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatCard label="Net Sales" value={peso(summary.gross)} hint={`${num(summary.txns)} transaction${summary.txns === 1 ? '' : 's'}${summary.creditSales > 0 ? ` · ${peso(summary.creditSales)} on utang` : ''}${summary.refunds > 0 ? ` · after ${peso(summary.refunds)} refunds` : ''}`} icon={<DollarSign size={18} />} tone="brand" />
-            <StatCard label="Gross Profit" value={peso(summary.profit)} hint={`Margin: ${margin.toFixed(1)}%`} icon={<TrendingUp size={18} />} tone="green" />
-            <StatCard label="Net Profit" value={peso(net)} hint={`Margin: ${netMargin.toFixed(1)}%`} icon={<Wallet size={18} />} tone={net >= 0 ? 'green' : 'red'} />
-            <StatCard label="Cash Collected" value={peso(summary.cash)} hint={summary.cash === 0 && summary.collections === 0 && summary.refundCash === 0 ? 'Money received in this period' : `${peso(summary.cashCheckout)} at checkout · ${peso(summary.collections)} utang payments${summary.refundCash > 0 ? ` · −${peso(summary.refundCash)} refunds` : ''}`} icon={<ShoppingBag size={18} />} tone="blue" testId="cash-collected" />
-            <StatCard label="Receivables" value={peso(local?.receivables)} hint="Unpaid credit balances" icon={<Users size={18} />} tone="orange" />
-            <StatCard label="Total Expenses" value={peso(summary.expenses)} hint={`${summary.gross ? ((summary.expenses / summary.gross) * 100).toFixed(1) : '0.0'}% of sales`} icon={<Receipt size={18} />} tone="red" />
-            <StatCard label="Credit / Utang" value={num(summary.creditCount)} hint={summary.creditCount ? `${peso(summary.creditSales)} added to utang${summary.creditUpfront > 0 ? ` · ${peso(summary.creditUpfront)} paid upfront` : ''}` : 'No credit sales in this period'} icon={<Users size={18} />} tone="purple" />
-            <StatCard label="Void Transactions" value={num(summary.voids)} hint="Excluded from totals" icon={<Ban size={18} />} tone="slate" />
+            <StatCard label="Net Sales" value={peso(summary.gross)} hint={`${num(summary.txns)} transaction${summary.txns === 1 ? '' : 's'}${summary.creditSales > 0 ? ` · ${peso(summary.creditSales)} on utang` : ''}${summary.refunds > 0 ? ` · after ${peso(summary.refunds)} refunds` : ''}`} icon={<DollarSign size={18} />} tone="brand" onClick={() => setDetail('sales')} />
+            <StatCard label="Gross Profit" value={peso(summary.profit)} hint={`Margin: ${margin.toFixed(1)}%`} icon={<TrendingUp size={18} />} tone="green" onClick={() => setDetail('gross')} />
+            <StatCard label="Net Profit" value={peso(net)} hint={`Margin: ${netMargin.toFixed(1)}%`} icon={<Wallet size={18} />} tone={net >= 0 ? 'green' : 'red'} onClick={() => setDetail('net')} />
+            <StatCard label="Cash Collected" value={peso(summary.cash)} hint={summary.cash === 0 && summary.collections === 0 && summary.refundCash === 0 ? 'Money received in this period' : `${peso(summary.cashCheckout)} at checkout · ${peso(summary.collections)} utang payments${summary.refundCash > 0 ? ` · −${peso(summary.refundCash)} refunds` : ''}`} icon={<ShoppingBag size={18} />} tone="blue" testId="cash-collected" onClick={() => setDetail('cash')} />
+            <StatCard label="Receivables" value={peso(local?.receivables)} hint="Unpaid credit balances" icon={<Users size={18} />} tone="orange" onClick={() => setDetail('receivables')} />
+            <StatCard label="Total Expenses" value={peso(summary.expenses)} hint={`${summary.gross ? ((summary.expenses / summary.gross) * 100).toFixed(1) : '0.0'}% of sales`} icon={<Receipt size={18} />} tone="red" onClick={() => setDetail('expenses')} />
+            <StatCard label="Credit / Utang" value={num(summary.creditCount)} hint={summary.creditCount ? `${peso(summary.creditSales)} added to utang${summary.creditUpfront > 0 ? ` · ${peso(summary.creditUpfront)} paid upfront` : ''}` : 'No credit sales in this period'} icon={<Users size={18} />} tone="purple" onClick={() => setDetail('credit')} />
+            <StatCard label="Void Transactions" value={num(summary.voids)} hint="Excluded from totals" icon={<Ban size={18} />} tone="slate" onClick={() => setDetail('voids')} />
             <StatCard label="Returns / Refunds" value={peso(summary.refunds)} hint={summary.refundCount ? `${num(summary.refundCount)} return${summary.refundCount === 1 ? '' : 's'} · deducted above` : 'No returns in this period'} icon={<Undo2 size={18} />} tone="orange" onClick={() => setTab('returns')} />
           </div>
 
@@ -280,6 +284,8 @@ export default function Reports() {
           )}
         </Card>
       )}
+
+      {detail && <ReportDetail kind={detail} onClose={() => setDetail(null)} summary={summary} net={net} sales={local?.sales || []} expenses={local?.expenseRows || []} receivables={local?.receivables || 0} top={top} periodLabel={periodLabel} needsCloud={needsCloud} storeId={store.id} onViewTransactions={() => { setDetail(null); setTab('transactions') }} />}
     </div>
   )
 }
@@ -342,5 +348,241 @@ function Returns({ returns }: { returns: SaleReturn[] }) {
       )}
       {open && <ReturnSlipModal ret={open} onClose={() => setOpen(null)} />}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------ Card detail modals */
+type DetailKind = 'sales' | 'gross' | 'net' | 'cash' | 'receivables' | 'expenses' | 'credit' | 'voids'
+
+const detailTitles: Record<DetailKind, string> = {
+  sales: 'Net Sales', gross: 'Gross Profit', net: 'Net Profit', cash: 'Cash Collected',
+  receivables: 'Receivables', expenses: 'Expenses', credit: 'Credit / Utang', voids: 'Void Transactions',
+}
+const methodLabel: Record<string, string> = { cash: 'Cash', gcash: 'GCash', credit: 'Credit / utang', card: 'Card', other: 'Other' }
+
+function DLine({ op, label, amount, bold, muted }: { op?: '+' | '−' | '='; label: React.ReactNode; amount: React.ReactNode; bold?: boolean; muted?: boolean }) {
+  return (
+    <div className={cls('flex items-center justify-between gap-3 py-1.5 text-sm', bold && 'font-bold border-t border-slate-200 mt-1 pt-2')}>
+      <span className={cls('flex items-center gap-2 min-w-0', muted ? 'text-slate-400' : 'text-slate-600')}>{op && <span className="w-4 text-center font-semibold text-slate-400 shrink-0">{op}</span>}<span className="truncate">{label}</span></span>
+      <span className={cls('tabular shrink-0', bold ? 'text-slate-900' : muted ? 'text-slate-400' : 'text-slate-800')}>{amount}</span>
+    </div>
+  )
+}
+
+function Tip({ tone = 'slate', children }: { tone?: 'green' | 'amber' | 'red' | 'slate' | 'blue'; children: React.ReactNode }) {
+  const t = { green: 'bg-emerald-50 text-emerald-900', amber: 'bg-amber-50 text-amber-900', red: 'bg-red-50 text-red-900', slate: 'bg-slate-50 text-slate-700', blue: 'bg-sky-50 text-sky-900' }
+  return <li className={cls('rounded-xl px-3 py-2 text-[13px] leading-snug', t[tone])}>{children}</li>
+}
+
+function ReportDetail({ kind, onClose, summary, net, sales, expenses, receivables, top, periodLabel, needsCloud, storeId, onViewTransactions }: {
+  kind: DetailKind; onClose: () => void; summary: Summary; net: number; sales: Sale[]; expenses: Expense[]; receivables: number
+  top: Array<{ name: string; qty: number; revenue: number; profit: number }>; periodLabel: string; needsCloud: boolean; storeId: string; onViewTransactions: () => void
+}) {
+  const navigate = useNavigate()
+  const [openSale, setOpenSale] = useState<Sale | null>(null)
+
+  const active = useMemo(() => sales.filter((s) => s.status === 'active'), [sales])
+  const creditSales = useMemo(() => active.filter((s) => s.payment_method === 'credit'), [active])
+  const voided = useMemo(() => sales.filter((s) => s.status === 'void'), [sales])
+  const byMethod = useMemo(() => {
+    const m = new Map<string, { total: number; count: number }>()
+    for (const s of active) { const e = m.get(s.payment_method) || { total: 0, count: 0 }; e.total += Number(s.total); e.count++; m.set(s.payment_method, e) }
+    return [...m.entries()].sort((a, b) => b[1].total - a[1].total)
+  }, [active])
+  const noCost = useMemo(() => { const s = new Set<string>(); for (const sale of active) for (const it of sale.items) if (!Number(it.cost)) s.add(it.name); return [...s] }, [active])
+
+  // All-time open balances per customer (matches the Receivables card figure)
+  const debtors = useLiveQuery(async () => {
+    if (kind !== 'receivables') return null
+    const [customers, credits] = await Promise.all([db.customers.where('store_id').equals(storeId).toArray(), db.credits.where('store_id').equals(storeId).toArray()])
+    const open = new Map<string, number>()
+    for (const c of credits) if (!c.settled && !c.deleted_at) { const k = c.customer_id || ''; open.set(k, round2((open.get(k) || 0) + Number(c.amount) - Number(c.paid))) }
+    const names = new Map(customers.map((c) => [c.id, c.name]))
+    return [...open.entries()].filter(([, b]) => b > 0.009).map(([id, balance]) => ({ id, name: names.get(id) || 'Walk-in / unknown', balance })).sort((a, b) => b.balance - a.balance)
+  }, [kind, storeId])
+
+  const margin = summary.gross ? (summary.profit / summary.gross) * 100 : 0
+  const netMargin = summary.gross ? (net / summary.gross) * 100 : 0
+  const markup = summary.cost > 0 ? (summary.profit / summary.cost) * 100 : 0
+  const withMargin = useMemo(() => top.filter((t) => t.revenue > 0).map((t) => ({ ...t, margin: (t.profit / t.revenue) * 100 })), [top])
+  const lowMargin = useMemo(() => withMargin.filter((t) => t.margin < 15 && t.revenue >= summary.gross * 0.02).sort((a, b) => a.margin - b.margin).slice(0, 5), [withMargin, summary.gross])
+  const expTotal = expenses.reduce((a, e) => a + Number(e.amount), 0)
+  const itemsOf = (s: Sale) => s.items.map((i) => `${i.name} ×${i.qty}`).join(', ')
+
+  return (
+    <Modal open onClose={onClose} title={<span>{detailTitles[kind]} <span className="text-xs text-slate-400 font-normal normal-case">· {periodLabel}</span></span>} size="md">
+      {kind === 'sales' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-2">
+            {byMethod.map(([m, v]) => <DLine key={m} op="+" label={`${methodLabel[m] || m} sales (${num(v.count)} txn${v.count === 1 ? '' : 's'})`} amount={peso(v.total)} />)}
+            {byMethod.length === 0 && <DLine label="No sales in this period" amount={peso(0)} muted />}
+            {summary.refunds > 0 && <DLine op="−" label="Refunds given back" amount={peso(summary.refunds)} />}
+            <DLine op="=" bold label="Net sales" amount={peso(summary.gross)} />
+          </div>
+          <ul className="space-y-1.5">
+            {summary.txns > 0 && <Tip><b>{num(summary.txns)}</b> transaction{summary.txns === 1 ? '' : 's'} {periodLabel} with an average basket of <b>{peso(summary.gross / Math.max(1, summary.txns))}</b>.</Tip>}
+            {summary.creditSales > 0 && <Tip tone="amber">Sales are counted when made, even if unpaid — <b>{peso(summary.creditSales)}</b> of this was taken on utang and is still uncollected (see Receivables). Only {peso(summary.cash)} actually came in as money.</Tip>}
+            {summary.discount > 0 && <Tip>These figures are after <b>{peso(summary.discount)}</b> in checkout discounts.</Tip>}
+          </ul>
+          <Button block variant="outline" icon={<Receipt size={16} />} onClick={onViewTransactions}>View all transactions</Button>
+        </div>
+      )}
+
+      {kind === 'gross' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-2">
+            <DLine label="Net sales" amount={peso(summary.gross)} />
+            <DLine op="−" label="Cost of goods sold (puhunan)" amount={peso(summary.cost)} />
+            <DLine op="=" bold label="Gross profit" amount={peso(summary.profit)} />
+            <div className="text-[11px] text-slate-500 pt-1">Margin {margin.toFixed(1)}% of sales{summary.cost > 0 ? ` · average mark-up ${markup.toFixed(1)}% above cost` : ''}</div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Why is it {peso(summary.profit)}?</div>
+            <ul className="space-y-1.5">
+              {summary.txns === 0 && <Tip>No sales were recorded {periodLabel}, so there is no profit to explain yet.</Tip>}
+              {summary.txns > 0 && (
+                <Tip tone={margin < 10 ? 'red' : margin < 20 ? 'amber' : 'green'}>
+                  Out of every <b>₱100</b> sold, about <b>₱{Math.min(100, 100 - margin).toFixed(0)}</b> went to paying for the goods themselves and only <b>₱{margin.toFixed(0)}</b> stayed as profit.{' '}
+                  {margin < 20 ? <><b>Low mark-up</b> is the main reason — selling prices average just {markup.toFixed(0)}% above cost. Raising prices slightly or sourcing stock cheaper increases this figure directly.</> : 'That is a healthy retail margin.'}
+                </Tip>
+              )}
+              {lowMargin.length > 0 && <Tip tone="amber"><b>Low mark-up items</b> pulled profit down: {lowMargin.map((t) => `${t.name} (${t.margin.toFixed(0)}% margin on ${peso(t.revenue)} sold)`).join(' · ')}. Consider re-pricing these.</Tip>}
+              {noCost.length > 0 && <Tip tone="blue">{num(noCost.length)} item{noCost.length === 1 ? ' has' : 's have'} <b>no purchase cost recorded</b> ({noCost.slice(0, 3).join(', ')}{noCost.length > 3 ? `, +${noCost.length - 3} more` : ''}), so their profit is guessed as 100% — the true figure may differ. Set their cost in Items for accurate reports.</Tip>}
+              {summary.discount > 0 && <Tip tone="amber">Discounts of <b>{peso(summary.discount)}</b> were given at checkout — that comes straight out of profit.</Tip>}
+              {summary.refunds > 0 && <Tip>Returns took back {peso(summary.refunds)} in sales, trimming profit by {peso(summary.refundProfit)}.</Tip>}
+              {summary.creditSales > 0 && <Tip>Utang does <b>not</b> lower this number — credit sales still count as sales. Profit is small only when the gap between selling price and cost is small.</Tip>}
+            </ul>
+          </div>
+          <p className="text-[11px] text-slate-400">Operating expenses ({peso(summary.expenses)}) are not deducted here — tap the Net Profit card for that.</p>
+        </div>
+      )}
+
+      {kind === 'net' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-2">
+            <DLine label="Gross profit (sales − cost of goods)" amount={peso(summary.profit)} />
+            <DLine op="−" label="Operating expenses" amount={peso(summary.expenses)} />
+            <DLine op="=" bold label="Net profit" amount={peso(net)} />
+            <div className="text-[11px] text-slate-500 pt-1">Net margin {netMargin.toFixed(1)}% of sales</div>
+          </div>
+          <ul className="space-y-1.5">
+            {summary.expenses === 0 && summary.txns > 0 && <Tip tone="blue">No expenses were recorded {periodLabel}, so net profit equals gross profit. Record rent, electricity, load, salaries and other costs in the Expenses tab to see your true bottom line.</Tip>}
+            {net < 0 && <Tip tone="red">You spent <b>{peso(summary.expenses - summary.profit)}</b> more on expenses than the profit your sales produced — the store operated at a loss for this period.</Tip>}
+            {net > 0 && summary.txns > 0 && <Tip tone="green">After paying for the goods and the expenses, <b>{peso(net)}</b> is what the business truly earned {periodLabel} — about ₱{netMargin.toFixed(0)} kept from every ₱100 sold.</Tip>}
+            <Tip>Buying inventory is <b>not</b> counted as an expense here — the cost of each item is deducted when it is sold (that's the “cost of goods sold” inside gross profit). This avoids double-counting.</Tip>
+          </ul>
+        </div>
+      )}
+
+      {kind === 'cash' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-2">
+            {byMethod.filter(([m]) => m !== 'credit').map(([m, v]) => <DLine key={m} op="+" label={`${methodLabel[m] || m} received at checkout`} amount={peso(v.total)} />)}
+            {summary.creditUpfront > 0 && <DLine op="+" label="Paid upfront on utang sales" amount={peso(summary.creditUpfront)} />}
+            {summary.collections > 0 && <DLine op="+" label="Utang payments collected" amount={peso(summary.collections)} />}
+            {summary.refundCash > 0 && <DLine op="−" label="Cash handed back for returns" amount={peso(summary.refundCash)} />}
+            <DLine op="=" bold label="Cash collected" amount={peso(summary.cash)} />
+          </div>
+          <ul className="space-y-1.5">
+            <Tip>This is the money that <b>actually entered</b> your drawer / GCash {periodLabel} — unlike Net Sales, which counts utang sales even before they're paid.</Tip>
+            {summary.creditSales > 0 && <Tip tone="amber"><b>{peso(summary.creditSales)}</b> of this period's sales went on utang and is not in this figure yet. It moves here once customers pay (recorded in Credits).</Tip>}
+          </ul>
+        </div>
+      )}
+
+      {kind === 'receivables' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-orange-50 border border-orange-100 p-3 flex items-center justify-between">
+            <div><div className="text-xs text-orange-700 uppercase tracking-wide font-semibold">Total unpaid utang</div><div className="text-2xl font-black tabular text-orange-700">{peso(receivables)}</div></div>
+            <HandCoins className="text-orange-300" size={32} />
+          </div>
+          <ul className="space-y-1.5">
+            <Tip>This is <b>all-time</b> unpaid utang across every customer — not just {periodLabel}. It's money already counted in past sales that hasn't been collected yet.</Tip>
+          </ul>
+          {debtors && debtors.length > 0 && (
+            <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100">
+              {debtors.slice(0, 30).map((d) => (
+                <div key={d.id} className="flex items-center justify-between px-3 py-2 text-sm"><span className="text-slate-700 truncate">{d.name}</span><span className="font-semibold tabular text-orange-600">{peso(d.balance)}</span></div>
+              ))}
+              {debtors.length > 30 && <div className="px-3 py-2 text-xs text-slate-400 text-center">+{debtors.length - 30} more customers</div>}
+            </div>
+          )}
+          {debtors && debtors.length === 0 && <div className="text-sm text-slate-500 text-center py-4">No unpaid balances — everything is collected. 🎉</div>}
+          <Button block variant="outline" icon={<Users size={16} />} onClick={() => { onClose(); navigate('/credits') }}>Open Credits page to collect</Button>
+        </div>
+      )}
+
+      {kind === 'expenses' && (
+        <div className="space-y-3">
+          {expenses.length === 0 ? (
+            <><div className="text-sm text-slate-500 text-center py-6">No expenses recorded for {periodLabel}.</div>
+            <ul className="space-y-1.5"><Tip tone="blue">Recording expenses (rent, electricity, load, transport, salaries…) makes your Net Profit figure honest — right now it assumes running the store costs nothing.</Tip></ul></>
+          ) : (
+            <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100">
+              {expenses.map((e) => (
+                <div key={e.id} className="flex items-center gap-3 px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-slate-800 truncate">{e.description || e.category || 'Expense'}</div>
+                    <div className="text-[11px] text-slate-500">{format(parseISO(e.expense_date), 'MMM d, yyyy')}{e.category && e.description ? ` · ${e.category}` : ''}</div>
+                  </div>
+                  <div className="font-semibold tabular text-sm text-red-600">{peso(e.amount)}</div>
+                </div>
+              ))}
+              <div className="flex items-center justify-between px-3 py-2.5 font-bold text-sm"><span>Total ({periodLabel})</span><span className="tabular text-red-700">{peso(expTotal)}</span></div>
+            </div>
+          )}
+          <Button block variant="outline" icon={<Receipt size={16} />} onClick={() => { onClose(); navigate('/expenses') }}>Open Expenses page</Button>
+        </div>
+      )}
+
+      {kind === 'credit' && (
+        <div className="space-y-3">
+          <ul className="space-y-1.5">
+            <Tip><b>{num(creditSales.length)}</b> credit sale{creditSales.length === 1 ? '' : 's'} {periodLabel} added <b>{peso(summary.creditSales)}</b> to customers' utang{summary.creditUpfront > 0 ? <> ({peso(summary.creditUpfront)} was paid upfront at checkout)</> : null}. Unpaid amounts sit under Receivables until collected.</Tip>
+          </ul>
+          {creditSales.length === 0 ? <div className="text-sm text-slate-500 text-center py-6">No credit / utang sales in this period.</div> : (
+            <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100">
+              {creditSales.map((s) => (
+                <button key={s.id} onClick={() => setOpenSale(s)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold text-slate-700">{s.txn_no}</span>{s.customer_name && <span className="text-xs text-slate-500 truncate">{s.customer_name}</span>}</div>
+                    <div className="text-xs text-slate-500 truncate">{fmtRelative(s.created_at)} · {itemsOf(s)}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-bold tabular text-sm text-orange-600">{peso(Math.max(0, Number(s.total) - Number(s.amount_paid || 0)))}</div>
+                    <div className="text-[10px] text-slate-400">{Number(s.amount_paid || 0) > 0 ? `of ${peso(s.total)} · ${peso(Math.min(Number(s.amount_paid), Number(s.total)))} paid` : 'on utang'}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {kind === 'voids' && (
+        <div className="space-y-3">
+          <ul className="space-y-1.5">
+            <Tip>Voided transactions are <b>excluded from every total</b> on this page, and the stock of their items was restored. Use void for mistakes — use Returns for actual refunds.</Tip>
+          </ul>
+          {voided.length === 0 ? <div className="text-sm text-slate-500 text-center py-6">No voided transactions in this period.</div> : (
+            <div className="rounded-2xl border border-slate-100 divide-y divide-slate-100">
+              {voided.map((s) => (
+                <button key={s.id} onClick={() => setOpenSale(s)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold text-slate-700">{s.txn_no}</span><Badge tone="red">Void</Badge>{s.customer_name && <span className="text-xs text-slate-500 truncate">{s.customer_name}</span>}</div>
+                    <div className="text-xs text-slate-500 truncate">{fmtRelative(s.voided_at || s.created_at)}{memberName(s.voided_by, '') && <> · voided by <span className="text-slate-700">{memberName(s.voided_by, '')}</span></>} · {itemsOf(s)}</div>
+                  </div>
+                  <div className="font-bold tabular text-sm text-slate-400 line-through shrink-0">{peso(s.total)}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {needsCloud && kind !== 'receivables' && <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-3 flex items-center gap-1.5"><Cloud size={12} className="shrink-0" /> This range goes beyond the sales cached on this device — detail lists may be incomplete, but the card totals are correct.</p>}
+
+      <ReceiptModal sale={openSale} onClose={() => setOpenSale(null)} />
+    </Modal>
   )
 }
