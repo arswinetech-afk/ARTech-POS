@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { Download, DollarSign, TrendingUp, Wallet, ShoppingBag, Users, Receipt, Ban, Trophy, Lightbulb, AlertCircle, CheckCircle2, MinusCircle, Search, Package, Cloud, Undo2, HandCoins } from 'lucide-react'
+import { Download, DollarSign, TrendingUp, Wallet, ShoppingBag, Users, Receipt, Ban, Trophy, Lightbulb, AlertCircle, CheckCircle2, MinusCircle, Search, Package, Cloud, Undo2, HandCoins, FileText } from 'lucide-react'
 import { format, startOfDay, endOfDay, subDays, startOfMonth, startOfYear, differenceInDays, subMonths, endOfMonth, parseISO } from 'date-fns'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line, Legend } from 'recharts'
 import { db } from '../lib/db'
@@ -14,7 +14,8 @@ import { ReturnSlipModal } from '../components/ReturnModal'
 import { voidSale } from '../lib/repo'
 import { peso, num, cls, fmtRelative, downloadText, toCSV, round2 } from '../lib/format'
 import { toast } from '../store/ui'
-import type { Sale, SaleReturn, CreditPayment, Expense } from '../lib/types'
+import { summarizePurchases, GROUP_LABEL, type PurchaseGroup, type PurchaseLine } from '../lib/purchasesReportPdf'
+import type { Sale, SaleReturn, CreditPayment, Expense, StockMovement, Store } from '../lib/types'
 
 type RangeKey = 'today' | '7d' | '30d' | 'month' | 'year' | 'custom'
 
@@ -71,7 +72,7 @@ export default function Reports() {
   const [params] = useSearchParams()
   const [range, setRange] = useState<RangeKey>((params.get('range') as RangeKey) || '30d')
   const [custom, setCustom] = useState({ from: format(subDays(new Date(), 29), 'yyyy-MM-dd'), to: format(new Date(), 'yyyy-MM-dd') })
-  const [tab, setTab] = useState<'dashboard' | 'transactions' | 'returns' | 'top'>('dashboard')
+  const [tab, setTab] = useState<'dashboard' | 'transactions' | 'returns' | 'purchases' | 'top'>('dashboard')
   const canView = usePermission('view_reports')
   const [from, to] = useMemo(() => rangeDates(range, custom), [range, custom])
   const days = differenceInDays(to, from) + 1
@@ -103,6 +104,8 @@ export default function Reports() {
     return {
       sales: sales.sort((a, b) => b.created_at.localeCompare(a.created_at)), returns: returns.sort((a, b) => b.created_at.localeCompare(a.created_at)),
       expenseRows: expenses.sort((a, b) => b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at)),
+      purchaseRows: purchases.sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      productNames: new Map(products.map((p) => [p.id, p.name])),
       summary: summarize(sales, exp, returns, payments), prev: summarize(prevSales, prevExpenses.reduce((a, e) => a + Number(e.amount), 0), prevReturns, prevPayments),
       receivables: credits.filter((c) => !c.settled).reduce((a, c) => a + Number(c.amount) - Number(c.paid), 0),
       inventoryValue: products.reduce((a, p) => a + Number(p.cost) * Number(p.stock), 0),
@@ -173,7 +176,7 @@ export default function Reports() {
       </div>
       {range === 'custom' && <div className="flex gap-2 items-center"><Input type="date" value={custom.from} onChange={(e) => setCustom({ ...custom, from: e.target.value })} /><span className="text-slate-400">→</span><Input type="date" value={custom.to} onChange={(e) => setCustom({ ...custom, to: e.target.value })} /></div>}
       {needsCloud && <div className={cls('text-xs rounded-lg px-3 py-2 flex items-center gap-2', cloud ? 'bg-sky-50 text-sky-800' : 'bg-amber-50 text-amber-800')}><Cloud size={14} /> {cloud ? 'This range includes history older than your device cache – figures loaded from the cloud.' : isOnline() ? 'Loading older history from the cloud…' : 'Part of this range is older than your device cache. Connect to the internet for complete figures.'}</div>}
-      <Segmented value={tab} onChange={setTab} className="w-full" options={[{ value: 'dashboard', label: 'Dashboard' }, { value: 'transactions', label: 'Transactions' }, { value: 'returns', label: `Returns${local?.returns.length ? ` (${local.returns.length})` : ''}` }, { value: 'top', label: 'Top Products' }]} />
+      <Segmented value={tab} onChange={setTab} className="w-full" options={[{ value: 'dashboard', label: 'Dashboard' }, { value: 'transactions', label: 'Transactions' }, { value: 'returns', label: `Returns${local?.returns.length ? ` (${local.returns.length})` : ''}` }, { value: 'purchases', label: 'Purchases' }, { value: 'top', label: 'Top Products' }]} />
 
       {tab === 'dashboard' && (
         <div className="space-y-3 animate-fade-in">
@@ -219,12 +222,13 @@ export default function Reports() {
             })}
           </Card>
 
-          <Card className="p-4">
+          <Card className="p-4" onClick={() => setTab('purchases')}>
             <div className="font-semibold flex items-center gap-2"><Package size={18} className="text-brand-600" /> Inventory Purchases</div>
             <div className="text-xs text-slate-500 mb-3">For cash flow & purchasing analysis only — does not affect Net Profit.</div>
             <div className="flex justify-between text-sm py-1"><span className="text-slate-600">Total Purchases (period)</span><b className="tabular">{peso(local?.purchases)}</b></div>
             <div className="flex justify-between text-sm py-1"><span className="text-slate-600">Purchase Transactions</span><b className="tabular">{num(local?.purchaseCount)}</b></div>
             <div className="flex justify-between text-sm py-1"><span className="text-slate-600">Current Inventory Value</span><b className="tabular text-brand-700">{peso(local?.inventoryValue)}</b></div>
+            <div className="text-xs text-brand-600 font-medium mt-1.5">Tap for restock history & purchases report →</div>
           </Card>
 
           <Card className="p-4">
@@ -267,6 +271,8 @@ export default function Reports() {
       {tab === 'transactions' && <Transactions sales={local?.sales || []} />}
 
       {tab === 'returns' && <Returns returns={local?.returns || []} />}
+
+      {tab === 'purchases' && <PurchasesTab rows={local?.purchaseRows || []} names={local?.productNames || new Map()} from={from} to={to} days={days} periodLabel={periodLabel} store={store} />}
 
       {tab === 'top' && (
         <Card className="animate-fade-in">
@@ -347,6 +353,128 @@ function Returns({ returns }: { returns: SaleReturn[] }) {
         </Card>
       )}
       {open && <ReturnSlipModal ret={open} onClose={() => setOpen(null)} />}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------ Purchases / restock history */
+function PurchasesTab({ rows, names, from, to, days, periodLabel, store }: { rows: StockMovement[]; names: Map<string, string>; from: Date; to: Date; days: number; periodLabel: string; store: Store }) {
+  const [q, setQ] = useState('')
+  const [group, setGroup] = useState<PurchaseGroup>(days <= 14 ? 'day' : days <= 92 ? 'week' : 'month')
+  const [limit, setLimit] = useState(50)
+  const [pdfBusy, setPdfBusy] = useState(false)
+
+  const lines: PurchaseLine[] = useMemo(() => rows.map((m) => ({
+    at: m.created_at,
+    item: names.get(m.product_id || '') || 'Deleted item',
+    qty: round2(Number(m.qty)),
+    unitCost: m.unit_cost == null ? null : Number(m.unit_cost),
+    total: round2(Number(m.qty) * Number(m.unit_cost || 0)),
+    note: m.note && m.note !== 'Stock in' ? m.note : null,
+    by: memberName(m.created_by, '') || null,
+  })), [rows, names])
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase()
+    return t ? lines.filter((l) => l.item.toLowerCase().includes(t) || (l.note || '').toLowerCase().includes(t) || (l.by || '').toLowerCase().includes(t)) : lines
+  }, [lines, q])
+
+  const totalCost = round2(filtered.reduce((a, l) => a + l.total, 0))
+  const units = round2(filtered.reduce((a, l) => a + l.qty, 0))
+  const distinctItems = new Set(filtered.map((l) => l.item)).size
+  const missingCost = filtered.filter((l) => l.unitCost == null).length
+  const periods = useMemo(() => [...summarizePurchases(filtered, group)].reverse(), [filtered, group])
+
+  const exportCSV = () => {
+    downloadText(
+      `purchases-${format(from, 'yyyyMMdd')}-${format(to, 'yyyyMMdd')}.csv`,
+      toCSV(filtered.map((l) => ({ Date: format(parseISO(l.at), 'yyyy-MM-dd HH:mm'), Item: l.item, Qty: l.qty, 'Unit Cost': l.unitCost ?? '', 'Line Total': l.unitCost == null ? '' : l.total, 'Supplier / Note': l.note || '', 'Recorded By': l.by || '' }))),
+    )
+  }
+
+  const exportPDF = async () => {
+    if (pdfBusy) return
+    setPdfBusy(true)
+    try {
+      const [pdf, files] = await Promise.all([import('../lib/purchasesReportPdf'), import('../lib/stockReport')])
+      const profile = useAppStore.getState().profile
+      const preparedBy = profile ? (profile.full_name?.trim() || profile.email.split('@')[0]) : null
+      const data = pdf.aggregatePurchasesReport(store.name, filtered, { from, to, group, preparedBy })
+      const doc = await pdf.buildPurchasesReportPdf(data)
+      const blob = doc.output('blob')
+      const filename = pdf.purchasesReportFilename(from, to)
+      if (files.canSharePdf(blob, filename)) {
+        try { await files.sharePdf(blob, filename, `${store.name} — Inventory Purchases Report`) } catch (e) { if ((e as Error)?.name !== 'AbortError') throw e }
+      } else {
+        files.savePdf(blob, filename)
+        toast.success('Purchases report downloaded', `${filename} · ${doc.getNumberOfPages()} page${doc.getNumberOfPages() === 1 ? '' : 's'} · ${peso(data.totalCost)} total`)
+      }
+    } catch (e) { toast.error('Could not create the report', (e as Error).message) } finally { setPdfBusy(false) }
+  }
+
+  return (
+    <div className="space-y-3 animate-fade-in">
+      <div className="bg-gradient-to-br from-brand-600 to-emerald-500 text-white rounded-2xl p-4 shadow-card flex items-center justify-between">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-white/80">Inventory purchases · {periodLabel}</div>
+          <div className="text-3xl font-black tabular">{peso(totalCost)}</div>
+          <div className="text-xs text-white/80 mt-0.5">{num(filtered.length)} stock-in{filtered.length === 1 ? '' : 's'} · {num(units, 2)} units · {num(distinctItems)} item{distinctItems === 1 ? '' : 's'}</div>
+        </div>
+        <Package size={40} className="text-white/50" />
+      </div>
+
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" icon={<Download size={16} />} onClick={exportCSV} className="flex-1">Export CSV</Button>
+        <Button size="sm" icon={<FileText size={16} />} onClick={exportPDF} loading={pdfBusy} className="flex-1">PDF Report</Button>
+      </div>
+
+      {missingCost > 0 && <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 text-amber-800">{num(missingCost)} stock-in{missingCost === 1 ? '' : 's'} ha{missingCost === 1 ? 's' : 've'} no unit cost recorded — enter the unit cost when stocking in so cost totals stay accurate for accounting.</div>}
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <div className="font-semibold text-sm">{GROUP_LABEL[group]} summary</div>
+          <Segmented size="sm" value={group} onChange={setGroup} options={[{ value: 'day', label: 'Daily' }, { value: 'week', label: 'Weekly' }, { value: 'month', label: 'Monthly' }, { value: 'quarter', label: 'Quarterly' }]} />
+        </div>
+        {periods.length === 0 ? <div className="text-sm text-slate-500 text-center py-4">No purchases in this period.</div> : (
+          <div className="divide-y divide-slate-100">
+            <div className="grid grid-cols-[1fr_auto_auto] gap-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide"><span>Period</span><span className="text-right w-20">Receipts · Units</span><span className="text-right w-24">Total cost</span></div>
+            {periods.map((p) => (
+              <div key={p.key} className="grid grid-cols-[1fr_auto_auto] gap-3 py-2 text-sm items-center">
+                <span className="text-slate-700 truncate">{p.label}</span>
+                <span className="text-right w-20 text-xs text-slate-500 tabular">{num(p.receipts)} · {num(p.units, 2)}</span>
+                <b className="text-right w-24 tabular">{peso(p.total)}</b>
+              </div>
+            ))}
+            <div className="grid grid-cols-[1fr_auto] gap-3 py-2 text-sm font-bold"><span>Total ({periodLabel})</span><span className="tabular text-brand-700">{peso(totalCost)}</span></div>
+          </div>
+        )}
+      </Card>
+
+      <Input value={q} onChange={(e) => { setQ(e.target.value); setLimit(50) }} placeholder="Search item, supplier / note or staff" left={<Search size={18} />} />
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={<Package />} title="No stock-ins in this period" message={'Restocks are recorded from Items → tap an item\'s stock → "Stock in (+)". Enter the quantity and unit cost so this report stays accurate.'} />
+      ) : (
+        <Card className="divide-y divide-slate-100">
+          <div className="flex items-center justify-between px-3 py-2 text-xs text-slate-500"><span>{num(filtered.length)} stock-in{filtered.length === 1 ? '' : 's'}</span><span>Total <b className="text-slate-800 tabular">{peso(totalCost)}</b></span></div>
+          {filtered.slice(0, limit).map((l, i) => (
+            <div key={rows[0] ? `${l.at}-${i}` : i} className="flex items-center gap-3 px-3 py-2.5">
+              <div className="w-9 h-9 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0"><Package size={16} /></div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-800 truncate">{l.item}</div>
+                <div className="text-xs text-slate-500 truncate">{format(parseISO(l.at), 'MMM d, yyyy h:mm a')}{l.by && <> · by {l.by}</>}{l.note && <> · {l.note}</>}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="font-bold tabular text-sm text-slate-900">{l.unitCost == null ? `+${num(l.qty, 2)}` : peso(l.total)}</div>
+                <div className="text-[10px] text-slate-400 tabular">{l.unitCost == null ? 'no unit cost' : `${num(l.qty, 2)} × ${peso(l.unitCost)}`}</div>
+              </div>
+            </div>
+          ))}
+          {filtered.length > limit && <button onClick={() => setLimit(limit + 100)} className="w-full h-11 text-sm text-brand-700 font-medium">Show more ({filtered.length - limit} remaining)</button>}
+        </Card>
+      )}
+
+      <p className="text-[11px] text-slate-400">The PDF report follows a standard Purchases Journal format — period summary ({GROUP_LABEL[group].toLowerCase()}), top items by spend, the detailed journal and signature lines for Accounting & Procurement. Change the date range above to build weekly, monthly or quarterly submissions.</p>
     </div>
   )
 }
