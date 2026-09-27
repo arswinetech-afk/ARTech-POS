@@ -14,7 +14,7 @@ import { ReturnSlipModal } from '../components/ReturnModal'
 import { voidSale } from '../lib/repo'
 import { peso, num, cls, fmtRelative, downloadText, toCSV, round2 } from '../lib/format'
 import { toast } from '../store/ui'
-import { summarizePurchases, GROUP_LABEL, type PurchaseGroup, type PurchaseLine } from '../lib/purchasesReportPdf'
+import { summarizePurchases, computePriceChanges, GROUP_LABEL, type PurchaseGroup, type PurchaseLine } from '../lib/purchasesReportPdf'
 import type { Sale, SaleReturn, CreditPayment, Expense, StockMovement, Store } from '../lib/types'
 
 type RangeKey = 'today' | '7d' | '30d' | 'month' | 'year' | 'custom'
@@ -105,7 +105,7 @@ export default function Reports() {
       sales: sales.sort((a, b) => b.created_at.localeCompare(a.created_at)), returns: returns.sort((a, b) => b.created_at.localeCompare(a.created_at)),
       expenseRows: expenses.sort((a, b) => b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at)),
       purchaseRows: purchases.sort((a, b) => b.created_at.localeCompare(a.created_at)),
-      productNames: new Map(products.map((p) => [p.id, p.name])),
+      productInfo: new Map(products.map((p) => [p.id, { name: p.name, cost: Number(p.cost) || 0 }])),
       summary: summarize(sales, exp, returns, payments), prev: summarize(prevSales, prevExpenses.reduce((a, e) => a + Number(e.amount), 0), prevReturns, prevPayments),
       receivables: credits.filter((c) => !c.settled).reduce((a, c) => a + Number(c.amount) - Number(c.paid), 0),
       inventoryValue: products.reduce((a, p) => a + Number(p.cost) * Number(p.stock), 0),
@@ -163,6 +163,15 @@ export default function Reports() {
   const [detail, setDetail] = useState<DetailKind | null>(null)
   const periodLabel = range === 'today' ? 'today' : range === '7d' ? 'the last 7 days' : range === '30d' ? 'the last 30 days' : range === 'month' ? 'this month' : range === 'year' ? 'this year' : `${format(from, 'MMM d')} – ${format(to, 'MMM d, yyyy')}`
 
+  // Supplier cost fluctuations within the period (for the Smart Insights card)
+  const priceMoves = useMemo(() => {
+    if (!local) return []
+    return computePriceChanges(local.purchaseRows.map((m) => ({
+      at: m.created_at, item: local.productInfo.get(m.product_id || '')?.name || 'Deleted item',
+      qty: Number(m.qty), unitCost: m.unit_cost == null ? null : Number(m.unit_cost), total: 0, note: null, by: null,
+    })))
+  }, [local])
+
   if (!store) return null
   if (!canView) return <Navigate to="/" replace />
   return (
@@ -208,6 +217,7 @@ export default function Reports() {
               {summary.expenses > summary.profit && summary.txns > 0 && <li className="text-red-700">Operating expenses ({peso(summary.expenses)}) exceed gross profit by <b>{peso(summary.expenses - summary.profit)}</b>. Reduce expenses or increase margins to become profitable.</li>}
               {summary.txns > 0 && summary.creditSales / Math.max(1, summary.gross) > 0.2 && <li className="text-orange-700"><b>{((summary.creditSales / summary.gross) * 100).toFixed(0)}%</b> of sales went on utang (unpaid at checkout). Only <b>{peso(summary.cash)}</b> actually came in — collect receivables ({peso(local?.receivables)}) to improve cash flow.</li>}
               {summary.txns > 0 && margin < 10 && <li className="text-amber-700">Gross margin is below 10%. Check items with missing purchase prices — profit may be under-reported.</li>}
+              {priceMoves.length > 0 && <li className={priceMoves.some((p) => p.change > 0) ? 'text-amber-700' : undefined}>Supplier prices moved on <b>{num(priceMoves.length)}</b> item{priceMoves.length === 1 ? '' : 's'} this period — e.g. <b>{priceMoves[0].name}</b> {peso(priceMoves[0].firstCost)} → {peso(priceMoves[0].lastCost)} ({priceMoves[0].pct > 0 ? '+' : ''}{priceMoves[0].pct.toFixed(0)}%). {priceMoves.some((p) => p.change > 0) ? 'Review selling prices of affected items so margins keep up — ' : ''}<button className="text-brand-700 font-semibold underline decoration-dotted" onClick={() => setTab('purchases')}>see price changes</button>.</li>}
               {local && local.prev.gross > 0 && <li>Sales are <b className={delta(summary.gross, local.prev.gross) >= 0 ? 'text-brand-700' : 'text-red-700'}>{delta(summary.gross, local.prev.gross) >= 0 ? 'up' : 'down'} {Math.abs(delta(summary.gross, local.prev.gross)).toFixed(0)}%</b> versus the previous {days}-day period.</li>}
               {top[0] && <li>Best seller: <b>{top[0].name}</b> — {num(top[0].qty, 2)} sold, {peso(top[0].revenue)} revenue.</li>}
             </ul>
@@ -272,7 +282,7 @@ export default function Reports() {
 
       {tab === 'returns' && <Returns returns={local?.returns || []} />}
 
-      {tab === 'purchases' && <PurchasesTab rows={local?.purchaseRows || []} names={local?.productNames || new Map()} from={from} to={to} days={days} periodLabel={periodLabel} store={store} />}
+      {tab === 'purchases' && <PurchasesTab rows={local?.purchaseRows || []} info={local?.productInfo || new Map()} from={from} to={to} days={days} periodLabel={periodLabel} store={store} />}
 
       {tab === 'top' && (
         <Card className="animate-fade-in">
@@ -358,7 +368,7 @@ function Returns({ returns }: { returns: SaleReturn[] }) {
 }
 
 /* ------------------------------------------------------------ Purchases / restock history */
-function PurchasesTab({ rows, names, from, to, days, periodLabel, store }: { rows: StockMovement[]; names: Map<string, string>; from: Date; to: Date; days: number; periodLabel: string; store: Store }) {
+function PurchasesTab({ rows, info, from, to, days, periodLabel, store }: { rows: StockMovement[]; info: Map<string, { name: string; cost: number }>; from: Date; to: Date; days: number; periodLabel: string; store: Store }) {
   const [q, setQ] = useState('')
   const [group, setGroup] = useState<PurchaseGroup>(days <= 14 ? 'day' : days <= 92 ? 'week' : 'month')
   const [limit, setLimit] = useState(50)
@@ -366,13 +376,13 @@ function PurchasesTab({ rows, names, from, to, days, periodLabel, store }: { row
 
   const lines: PurchaseLine[] = useMemo(() => rows.map((m) => ({
     at: m.created_at,
-    item: names.get(m.product_id || '') || 'Deleted item',
+    item: info.get(m.product_id || '')?.name || 'Deleted item',
     qty: round2(Number(m.qty)),
     unitCost: m.unit_cost == null ? null : Number(m.unit_cost),
     total: round2(Number(m.qty) * Number(m.unit_cost || 0)),
     note: m.note && m.note !== 'Stock in' ? m.note : null,
     by: memberName(m.created_by, '') || null,
-  })), [rows, names])
+  })), [rows, info])
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -384,6 +394,23 @@ function PurchasesTab({ rows, names, from, to, days, periodLabel, store }: { row
   const distinctItems = new Set(filtered.map((l) => l.item)).size
   const missingCost = filtered.filter((l) => l.unitCost == null).length
   const periods = useMemo(() => [...summarizePurchases(filtered, group)].reverse(), [filtered, group])
+  const priceChanges = useMemo(() => computePriceChanges(filtered), [filtered])
+
+  // Items whose latest purchase price differs from the cost saved on the item —
+  // future sales would compute profit with an outdated cost until it's updated.
+  const staleCosts = useMemo(() => {
+    const latest = new Map<string, { cost: number }>()
+    for (const m of rows) { // rows are newest-first
+      if (m.unit_cost == null || !m.product_id || latest.has(m.product_id)) continue
+      latest.set(m.product_id, { cost: Number(m.unit_cost) })
+    }
+    const out: Array<{ name: string; file: number; last: number }> = []
+    for (const [pid, l] of latest) {
+      const p = info.get(pid)
+      if (p && Math.abs(p.cost - l.cost) > 0.009) out.push({ name: p.name, file: p.cost, last: l.cost })
+    }
+    return out.sort((a, b) => Math.abs(b.last - b.file) - Math.abs(a.last - a.file))
+  }, [rows, info])
 
   const exportCSV = () => {
     downloadText(
@@ -429,6 +456,31 @@ function PurchasesTab({ rows, names, from, to, days, periodLabel, store }: { row
       </div>
 
       {missingCost > 0 && <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 text-amber-800">{num(missingCost)} stock-in{missingCost === 1 ? '' : 's'} ha{missingCost === 1 ? 's' : 've'} no unit cost recorded — enter the unit cost when stocking in so cost totals stay accurate for accounting.</div>}
+
+      {priceChanges.length > 0 && (
+        <Card className="p-4">
+          <div className="font-semibold text-sm flex items-center gap-2"><TrendingUp size={16} className="text-amber-500" /> Supplier price movements</div>
+          <div className="text-xs text-slate-500 mt-0.5 mb-2">Unit costs that changed between stock-ins {periodLabel}. Completed sales are <b>not</b> affected — each sale keeps the cost at the time it was made. Only future sales and inventory value use the new cost, so review the selling price of items that went up.</div>
+          <div className="divide-y divide-slate-100">
+            {priceChanges.slice(0, 8).map((p) => (
+              <div key={p.name} className="flex items-center gap-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-800 truncate">{p.name}</div>
+                  <div className="text-[11px] text-slate-500 tabular">{peso(p.firstCost)} → {peso(p.lastCost)}{p.moves > 1 ? ` · changed ${p.moves}×` : ''}</div>
+                </div>
+                <Badge tone={p.change > 0 ? 'red' : p.change < 0 ? 'green' : 'slate'}>{p.change > 0 ? '▲' : p.change < 0 ? '▼' : '＝'} {Math.abs(p.pct).toFixed(1)}%</Badge>
+              </div>
+            ))}
+            {priceChanges.length > 8 && <div className="text-xs text-slate-400 pt-2">+{priceChanges.length - 8} more — all included in the PDF report's Price Variance table.</div>}
+          </div>
+        </Card>
+      )}
+
+      {staleCosts.length > 0 && (
+        <div className="text-xs rounded-lg px-3 py-2 bg-orange-50 text-orange-800">
+          <b>Cost on file is outdated for {num(staleCosts.length)} item{staleCosts.length === 1 ? '' : 's'}:</b> {staleCosts.slice(0, 3).map((s) => `${s.name} (item cost ${peso(s.file)}, last bought at ${peso(s.last)})`).join(' · ')}{staleCosts.length > 3 ? ` · +${staleCosts.length - 3} more` : ''}. Until updated, profit on new sales is computed with the old cost — tick “Update item cost to this price” when stocking in, or edit the item.
+        </div>
+      )}
 
       <Card className="p-4">
         <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">

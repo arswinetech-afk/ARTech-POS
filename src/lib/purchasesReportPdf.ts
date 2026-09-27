@@ -31,6 +31,8 @@ export const GROUP_LABEL: Record<PurchaseGroup, string> = { day: 'Daily', week: 
 
 export interface PeriodLine { key: string; label: string; receipts: number; units: number; total: number }
 export interface TopSpendLine { name: string; receipts: number; units: number; total: number }
+/** Supplier cost fluctuation for one item within the period (a.k.a. purchase price variance). */
+export interface PriceChangeLine { name: string; firstCost: number; lastCost: number; change: number; pct: number; moves: number; lastAt: string }
 
 export interface PurchasesReportData {
   storeName: string
@@ -41,6 +43,7 @@ export interface PurchasesReportData {
   lines: PurchaseLine[]        // journal order: oldest first
   periods: PeriodLine[]
   topItems: TopSpendLine[]
+  priceChanges: PriceChangeLine[]
   totalCost: number
   units: number
   receipts: number
@@ -73,6 +76,25 @@ export function summarizePurchases(lines: PurchaseLine[], group: PurchaseGroup):
   return [...m.values()].sort((a, b) => a.key.localeCompare(b.key))
 }
 
+/** Detect supplier price fluctuations: items whose recorded unit cost changed between
+ *  receipts within the period. Sorted by biggest swing first. Past sales are never
+ *  affected by these changes — each sale keeps the cost captured when it was made. */
+export function computePriceChanges(lines: PurchaseLine[]): PriceChangeLine[] {
+  const byItem = new Map<string, PurchaseLine[]>()
+  for (const l of lines) if (l.unitCost != null) byItem.set(l.item, [...(byItem.get(l.item) || []), l])
+  const out: PriceChangeLine[] = []
+  for (const [name, ls] of byItem) {
+    const s = [...ls].sort((a, b) => a.at.localeCompare(b.at))
+    let moves = 0
+    for (let i = 1; i < s.length; i++) if (s[i].unitCost !== s[i - 1].unitCost) moves++
+    if (moves === 0) continue
+    const first = s[0].unitCost as number
+    const last = s[s.length - 1].unitCost as number
+    out.push({ name, firstCost: first, lastCost: last, change: round2(last - first), pct: first ? ((last - first) / first) * 100 : 0, moves, lastAt: s[s.length - 1].at })
+  }
+  return out.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct) || a.name.localeCompare(b.name))
+}
+
 /** Pure aggregation: receipt lines → full report dataset. */
 export function aggregatePurchasesReport(
   storeName: string,
@@ -93,6 +115,7 @@ export function aggregatePurchasesReport(
     lines: sorted,
     periods: summarizePurchases(sorted, opts.group),
     topItems: [...byItem.values()].sort((a, b) => b.total - a.total || b.units - a.units || a.name.localeCompare(b.name)).slice(0, 10),
+    priceChanges: computePriceChanges(sorted).slice(0, 40),
     totalCost: round2(sorted.reduce((a, l) => a + l.total, 0)),
     units: round2(sorted.reduce((a, l) => a + l.qty, 0)),
     receipts: sorted.length,
@@ -106,6 +129,7 @@ export function aggregatePurchasesReport(
 
 type RGB = [number, number, number]
 const GREEN: RGB = [28, 114, 73]
+const RED: RGB = [185, 28, 28]
 const MINT: RGB = [229, 242, 237]
 const ZEBRA: RGB = [242, 244, 244]
 const LINE: RGB = [209, 214, 219]
@@ -142,6 +166,13 @@ const TOP_COLS: Col[] = [
   { label: 'Units In', x: 135, align: 'center' },
   { label: '% Share', x: 165, align: 'right' },
   { label: 'Total Cost', x: 193, align: 'right', bold: true },
+]
+const VARIANCE_COLS: Col[] = [
+  { label: 'Item', x: 17, align: 'left', maxW: 62 },
+  { label: 'First Cost', x: 112, align: 'right' },
+  { label: 'Latest Cost', x: 142, align: 'right' },
+  { label: 'Change', x: 170, align: 'right' },
+  { label: '%', x: 193, align: 'right', bold: true },
 ]
 const JOURNAL_COLS: Col[] = [
   { label: 'Date', x: 17, align: 'left', maxW: 23 },
@@ -226,7 +257,7 @@ export function renderPurchasesReport(doc: jsPDF, d: PurchasesReportData): jsPDF
     for (const c of cols) text(c.label, c.x, y + 6.25, c.align)
     y += HEAD_H
   }
-  const table = (cols: Col[], rows: string[][], emptyText: string) => {
+  const table = (cols: Col[], rows: string[][], emptyText: string, colInk?: (ri: number, ci: number) => RGB | null) => {
     ensure(HEAD_H + ROW_H)
     let segTop = y
     const closeSegment = () => { doc.setLineWidth(0.2); stroke(LINE); doc.rect(ML, segTop, CW, y - segTop, 'S') }
@@ -241,9 +272,9 @@ export function renderPurchasesReport(doc: jsPDF, d: PurchasesReportData): jsPDF
     rows.forEach((r, i) => {
       if (y + ROW_H > BOTTOM) { closeSegment(); newPage(); segTop = y; tableHead(cols) }
       if (i % 2 === 1) { fill(ZEBRA); doc.rect(ML, y, CW, ROW_H, 'F') }
-      ink(INK)
       cols.forEach((c, ci) => {
         const v = r[ci] ?? ''
+        ink(colInk?.(i, ci) || INK)
         if (c.maxW) { const f = fit(v, c.maxW, 8.5, !!c.bold); font(f.sz, !!c.bold); text(f.str, c.x, y + 5.75, c.align) }
         else { font(8.5, !!c.bold); text(v, c.x, y + 5.75, c.align) }
       })
@@ -269,6 +300,25 @@ export function renderPurchasesReport(doc: jsPDF, d: PurchasesReportData): jsPDF
   sectionBar('Top Items by Purchase Spend', `top ${Math.min(10, d.topItems.length)} of ${d.distinctItems}`)
   table(TOP_COLS, d.topItems.map((t) => [t.name, qtyText(t.receipts), qtyText(t.units), pctText(t.total, d.totalCost), money(t.total)]), 'No purchases recorded in this period')
   y += 4
+
+  /* ---- purchase price variance (supplier cost fluctuations) */
+  sectionBar('Purchase Price Variance — Supplier Cost Changes', `${d.priceChanges.length} item${d.priceChanges.length === 1 ? '' : 's'}`)
+  table(
+    VARIANCE_COLS,
+    d.priceChanges.map((p) => [
+      p.moves > 1 ? `${p.name} (${p.moves} changes)` : p.name,
+      money(p.firstCost),
+      money(p.lastCost),
+      `${p.change > 0 ? '+' : p.change < 0 ? '-' : ''}${money(Math.abs(p.change))}`,
+      `${p.pct > 0 ? '+' : p.pct < 0 ? '-' : ''}${Math.abs(p.pct).toFixed(1)}%`,
+    ]),
+    'No supplier price changes detected in this period',
+    (ri, ci) => (ci >= 3 ? (d.priceChanges[ri].change > 0 ? RED : d.priceChanges[ri].change < 0 ? GREEN : null) : null),
+  )
+  y += 2
+  font(7.5); ink(MUTED)
+  text('First vs latest unit cost recorded at stock-in within the period. Completed sales are unaffected — every sale keeps the cost captured at the time of sale.', ML, y + 3)
+  y += 8
 
   /* ---- detailed journal */
   const journal = d.lines.slice(0, MAX_JOURNAL_ROWS)
