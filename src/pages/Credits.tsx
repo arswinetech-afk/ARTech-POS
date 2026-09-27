@@ -8,7 +8,10 @@ import { createCustomer, updateCustomer, addCredit, recordCreditPayment } from '
 import { peso, cls, fmtRelative, downloadText, toCSV, initials, round2 } from '../lib/format'
 import { toast } from '../store/ui'
 import { errorMessage } from '../lib/supabase'
-import type { Customer, Credit, CreditPayment } from '../lib/types'
+import type { Customer, Credit, CreditPayment, SaleItem } from '../lib/types'
+
+const itemsSummary = (items: SaleItem[] | undefined) =>
+  items && items.length ? items.map((i) => `${i.qty}× ${i.name}`).join(', ') : ''
 
 interface Row { customer: Customer; balance: number; open: number; lastAt: string | null }
 
@@ -46,7 +49,10 @@ export default function Credits() {
     if (!store) return
     const [customers, credits] = await Promise.all([db.customers.where('store_id').equals(store.id).toArray(), db.credits.where('store_id').equals(store.id).toArray()])
     const nm = new Map(customers.map((c) => [c.id, c]))
-    downloadText(`credits-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(credits.sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => ({ Customer: nm.get(c.customer_id || '')?.name || '', Phone: nm.get(c.customer_id || '')?.phone || '', 'Total Debt': c.amount, 'Amount Paid': c.paid, Settled: c.settled, Notes: c.notes || '', Created: c.created_at }))))
+    const saleIds = credits.map((c) => c.sale_id).filter((id): id is string => !!id)
+    const sales = saleIds.length ? await db.sales.where('id').anyOf(saleIds).toArray() : []
+    const si = new Map(sales.map((s) => [s.id, s.items]))
+    downloadText(`credits-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(credits.sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => ({ Customer: nm.get(c.customer_id || '')?.name || '', Phone: nm.get(c.customer_id || '')?.phone || '', Items: c.sale_id ? itemsSummary(si.get(c.sale_id)) : '', 'Total Debt': c.amount, 'Amount Paid': c.paid, Settled: c.settled, Notes: c.notes || '', Created: c.created_at }))))
   }
 
   if (!store) return null
@@ -127,12 +133,15 @@ function CustomerModal({ customer, onClose }: { customer: Customer; onClose: () 
       db.credit_payments.where('customer_id').equals(customer.id).toArray(),
       db.customers.get(customer.id),
     ])
+    const saleIds = credits.map((c) => c.sale_id).filter((id): id is string => !!id)
+    const sales = saleIds.length ? await db.sales.where('id').anyOf(saleIds).toArray() : []
+    const saleItems = new Map(sales.map((s) => [s.id, s.items]))
     const balance = round2(credits.filter((c) => !c.settled).reduce((a, c) => a + Number(c.amount) - Number(c.paid), 0))
     const ledger: Array<{ kind: 'charge' | 'payment'; at: string; row: Credit | CreditPayment }> = [
       ...credits.map((c) => ({ kind: 'charge' as const, at: c.created_at, row: c })),
       ...payments.map((p) => ({ kind: 'payment' as const, at: p.created_at, row: p })),
     ].sort((a, b) => b.at.localeCompare(a.at))
-    return { balance, ledger, cust: cust || customer, totalCharged: credits.reduce((a, c) => a + Number(c.amount), 0), totalPaid: payments.reduce((a, p) => a + Number(p.amount), 0) }
+    return { balance, ledger, saleItems, cust: cust || customer, totalCharged: credits.reduce((a, c) => a + Number(c.amount), 0), totalPaid: payments.reduce((a, p) => a + Number(p.amount), 0) }
   }, [customer.id])
 
   const submit = async () => {
@@ -175,7 +184,11 @@ function CustomerModal({ customer, onClose }: { customer: Customer; onClose: () 
         {data?.ledger.map((e) => e.kind === 'charge' ? (
           <li key={e.row.id} className="py-2 flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-700 flex items-center justify-center"><ReceiptIcon size={14} /></div>
-            <div className="flex-1 min-w-0"><div className="text-sm text-slate-800">{(e.row as Credit).notes || 'Charge'}</div><div className="text-[11px] text-slate-500">{fmtRelative(e.at)}{Number((e.row as Credit).paid) > 0 && !(e.row as Credit).settled ? ` · paid ${peso((e.row as Credit).paid)}` : ''}</div></div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-slate-800">{(e.row as Credit).notes || 'Charge'}</div>
+              {(e.row as Credit).sale_id && data.saleItems.get((e.row as Credit).sale_id!) && <div className="text-xs text-slate-600 line-clamp-2">{itemsSummary(data.saleItems.get((e.row as Credit).sale_id!))}</div>}
+              <div className="text-[11px] text-slate-500">{fmtRelative(e.at)}{Number((e.row as Credit).paid) > 0 && !(e.row as Credit).settled ? ` · paid ${peso((e.row as Credit).paid)}` : ''}</div>
+            </div>
             <div className="text-right"><div className={cls('font-semibold tabular text-sm', (e.row as Credit).settled ? 'text-slate-400 line-through' : 'text-orange-600')}>{peso((e.row as Credit).amount)}</div>{(e.row as Credit).settled && <Badge tone="green">Paid</Badge>}</div>
           </li>
         ) : (
