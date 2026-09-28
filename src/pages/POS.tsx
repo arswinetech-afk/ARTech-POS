@@ -7,6 +7,7 @@ import { useAppStore, usePermission, memberName } from '../store/app'
 import { useCart, cartTotals } from '../store/cart'
 import { Button, Modal, Input, Field, MoneyInput, Badge, EmptyState, Chip, Segmented, Textarea, Confirm } from '../components/ui'
 import CameraScanner from '../components/CameraScanner'
+import ScanTrap from '../components/ScanTrap'
 import ReceiptModal from '../components/ReceiptModal'
 import ReturnModal, { ReturnSlipModal } from '../components/ReturnModal'
 import { useBarcode, beep } from '../lib/scanner'
@@ -107,7 +108,7 @@ export default function POS() {
 
   const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') { setQ(''); return }
-    if (e.key !== 'Enter') return
+    if (e.key !== 'Enter' || e.defaultPrevented) return // defaultPrevented = the HID scanner wedge already handled this scan
     const exact = products.filter((p) => p.barcode === q.trim())
     if (exact.length === 1) { addProduct(exact[0]); setQ(''); return }
     if (results.length === 1) { addProduct(results[0]); setQ('') }
@@ -214,6 +215,8 @@ export default function POS() {
       {/* held carts sheet is shared by the desktop panel, the mobile sheet and the F8 key */}
       {!cartOpen && <HeldSheet open={heldOpen} onClose={() => setHeldOpen(false)} />}
 
+      {/* Bluetooth/USB HID scanners: invisible focus target so scans register even when no field is focused (required on Android). */}
+      <ScanTrap enabled={!scanner && !checkout && !receipt && !recent} />
       {scanner && <CameraScanner continuous onScan={(c) => handleCode(c)} onClose={() => setScanner(false)} title="Scan items – continuous" />}
 
       {/* barcode shared by several products */}

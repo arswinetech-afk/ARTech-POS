@@ -7,6 +7,7 @@ import { ROLE_LABEL } from '../lib/permissions'
 import { useSyncStore } from '../store/sync'
 import { Button, Card, CardHeader, Field, Input, Segmented, Toggle, Textarea, Confirm } from '../components/ui'
 import { usePrinter, buildReceipt, PAPER, type PaperWidth } from '../lib/printer'
+import { useBarcode, beep } from '../lib/scanner'
 import { syncNow, resetCursors, retryFailed, discardFailed } from '../lib/sync'
 import { db } from '../lib/db'
 import { toast } from '../store/ui'
@@ -158,7 +159,8 @@ export default function Settings() {
         <CardHeader title="Barcode & QR Scanners" icon={<ScanLine size={18} />} />
         <div className="px-4 pb-4 text-sm text-slate-600 space-y-2">
           <p><b>Camera:</b> tap <em>Scan</em> in the POS. Continuous mode adds each item as you scan.</p>
-          <p><b>Bluetooth / USB scanners</b> (cLabel, Netum, Eyoyo, etc.): pair in your phone's Bluetooth settings in <em>HID / keyboard</em> mode. They work on every screen automatically — no setup here.</p>
+          <p><b>Bluetooth / USB scanners</b> (cLabel, Netum, Eyoyo, etc.): pair once in your phone's <em>Bluetooth settings</em> in HID / keyboard mode — do <b>not</b> use the printer (Bluetooth) button, that one is only for thermal printers. Once paired, scanning works automatically on the POS and Items screens. If your scanner has modes, set it to <em>HID keyboard</em> with an <em>Enter/CR suffix</em> (most come this way).</p>
+          <ScannerTest />
           <Toggle checked={!!settings.beep} onChange={(v) => patchSettings({ beep: v })} label="Beep on successful scan" />
         </div>
       </Card>
@@ -201,6 +203,24 @@ export default function Settings() {
       </Card>
 
       <Confirm open={confirmReset} onClose={() => setConfirmReset(false)} title="Re-download all data?" message="Local copies will be replaced with the cloud data. Make sure pending changes are synced first." confirmText="Re-download" onConfirm={fullResync} />
+    </div>
+  )
+}
+
+/** Live check that a Bluetooth/USB HID scanner is reaching the app: tap the box, scan, see the code. */
+function ScannerTest() {
+  const [last, setLast] = useState<{ code: string; source: string } | null>(null)
+  useBarcode((code, source) => { setLast({ code, source }); beep(true) })
+  return (
+    <div className="space-y-2">
+      <Field label="Test your scanner" hint="Tap the box so it turns active, then pull the trigger on any barcode.">
+        <Input data-scan-trap="" placeholder="Tap here, then scan…" inputMode="none" autoComplete="off" />
+      </Field>
+      {last && (
+        <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800">
+          ✅ Scanner is working — read <b className="font-mono">{last.code}</b> via {last.source === 'hid' ? 'Bluetooth/USB scanner' : last.source === 'camera' ? 'camera' : last.source}.
+        </div>
+      )}
     </div>
   )
 }

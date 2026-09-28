@@ -225,15 +225,29 @@ export const usePrinter = create<PrinterState>((set, get) => ({
     set({ busy: true })
     try {
       const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: KNOWN_SERVICES })
-      const server = await device.gatt!.connect()
-      const services = await server.getPrimaryServices()
+      // Barcode scanners are HID keyboards — they never connect here. Catch the common
+      // mistake early with a helpful message instead of a cryptic GATT error.
+      if (/scan|barcod|hid/i.test(device.name || '')) {
+        throw new Error(`“${device.name}” looks like a barcode scanner, not a printer. Scanners are not connected inside the app — pair it in your phone's Bluetooth settings (HID/keyboard mode), then just scan: items are picked up automatically in the POS.`)
+      }
+      let server: BluetoothRemoteGATTServer
+      let services: BluetoothRemoteGATTService[]
+      try {
+        server = await device.gatt!.connect()
+        services = await server.getPrimaryServices()
+      } catch (e) {
+        if (String((e as Error)?.message || e).includes('No Services')) {
+          throw new Error(`No printer services found on “${device.name || 'this device'}”. If it is a barcode scanner, pair it in your phone's Bluetooth settings instead — only thermal printers connect here.`)
+        }
+        throw e
+      }
       let chosen: BluetoothRemoteGATTCharacteristic | null = null
       for (const s of services) {
         const chars = await s.getCharacteristics()
         const c = chars.find((x) => x.properties.writeWithoutResponse) || chars.find((x) => x.properties.write)
         if (c) { chosen = c; break }
       }
-      if (!chosen) throw new Error('No writable characteristic found – is this a printer?')
+      if (!chosen) throw new Error(`“${device.name || 'This device'}” has no printer output channel. If it is a barcode scanner, pair it in your phone's Bluetooth settings (HID/keyboard mode) instead.`)
       device.addEventListener('gattserverdisconnected', () => set({ connected: false, characteristic: null }))
       localStorage.setItem('artech-printer-name', device.name || 'Printer')
       set({ device, characteristic: chosen, name: device.name || 'Printer', connected: true })
