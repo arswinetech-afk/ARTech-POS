@@ -210,16 +210,21 @@ export default function Settings() {
 /** Live check that a Bluetooth/USB HID scanner is reaching the app: tap the box, scan, see the code. */
 function ScannerTest() {
   const [last, setLast] = useState<{ code: string; source: string } | null>(null)
-  useBarcode((code, source) => { setLast({ code, source }); beep(true) })
+  const [raw, setRaw] = useState('')
+  useBarcode((code, source) => { setLast({ code, source }); setRaw(''); beep(true) })
   return (
     <div className="space-y-2">
-      <Field label="Test your scanner" hint="Tap the box so it turns active, then pull the trigger on any barcode.">
-        <Input data-scan-trap="" placeholder="Tap here, then scan…" inputMode="none" autoComplete="off" />
+      <Field label="Test your scanner" hint="Tap the box (if the keyboard pops up just ignore it), then pull the trigger on any barcode.">
+        <Input data-scan-trap="" placeholder="Tap here, then scan…" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onInput={(e) => setRaw((e.target as HTMLInputElement).value)} />
       </Field>
-      {last && (
+      {last ? (
         <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800">
           ✅ Scanner is working — read <b className="font-mono">{last.code}</b> via {last.source === 'hid' ? 'Bluetooth/USB scanner' : last.source === 'camera' ? 'camera' : last.source}.
         </div>
+      ) : raw ? (
+        <div className="text-xs rounded-lg px-3 py-2 bg-sky-50 text-sky-800">Receiving: <b className="font-mono">{raw}</b>…</div>
+      ) : (
+        <div className="text-xs text-slate-400">If nothing at all appears after scanning, the scanner is in the wrong mode — check its manual for “HID / keyboard mode” (many switch modes by scanning a setup barcode).</div>
       )}
     </div>
   )

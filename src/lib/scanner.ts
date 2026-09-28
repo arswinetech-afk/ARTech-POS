@@ -2,42 +2,46 @@ import { useEffect, useRef } from 'react'
 
 /**
  * Keyboard-wedge (HID) scanner support.
- * Bluetooth / USB barcode & QR scanners (cLabel, Netum, Eyoyo, Inateck, generic
- * "BarCode Scanner HID" units…) pair in the phone's Bluetooth settings as a
+ * Bluetooth / USB barcode scanners pair in the phone's Bluetooth settings as a
  * keyboard: they "type" the code fast and usually finish with Enter.
  *
- * Two capture paths, because platforms behave differently:
+ * Android routes physical-keyboard input through the active IME (Gboard, vivo /
+ * Samsung keyboards…), and every vendor behaves differently, so we listen on
+ * EVERY channel the characters can arrive by and reconcile:
  *
- *  1. keydown wedge — desktop Chrome/Edge and scanners that deliver real key
- *     events. Characters are collected from fast keydown bursts.
+ *  1. keydown  — desktop and devices that deliver real key events
+ *  2. keypress — devices where keydown reports 229/"Unidentified" but keypress
+ *                still carries the character (some Samsung/vivo keyboards)
+ *  3. input    — IME-committed text: we diff the field's value on every input
+ *                event, which also survives autocorrect/composition rewriting
  *
- *  2. input wedge — Android. Mobile Chrome routes physical-keyboard input
- *     through the IME, so keydown reports keyCode 229 / key "Unidentified" and
- *     the characters ONLY appear via `input` events on the focused text field.
- *     We track fast text insertions per field and finalize on Enter
- *     (keydown 'Enter' or beforeinput 'insertLineBreak').
- *
- * A field marked `data-scan-trap` (see <ScanTrap/> on the POS) is an invisible
- * always-focused input that gives scans somewhere to land when the cashier is
- * not in a text box — there scans also finalize after a short idle even if the
- * scanner sends no Enter suffix.
+ * A scan is finalized by Enter/Tab (keydown, keypress, `insertLineBreak`, or a
+ * newline committed as text) — or after a short idle for fields marked
+ * `data-scan-trap` (the invisible POS trap and the Settings tester), so
+ * scanners with no Enter suffix work there too.
  */
 
-const KEY_GAP_MS = 100    // max gap between keydown chars of one scan burst
-const INPUT_GAP_MS = 250  // Bluetooth HID via IME can pause 100–200 ms between chars
+const KEY_GAP_MS = 100    // max gap between keydown/keypress chars of one burst
+const INPUT_GAP_MS = 250  // Bluetooth HID via the IME can pause 100–200 ms
 const MIN_LEN = 3
-const TRAP_IDLE_MS = 350  // finalize trap scans that have no Enter suffix
+const TRAP_IDLE_MS = 400  // finalize trap scans that have no Enter suffix
+const KBUF_FLUSH_LEN = 8  // no-suffix flush for raw-key bursts (EAN-8 and up)
 
 type Editable = HTMLInputElement | HTMLTextAreaElement
 const editable = (t: EventTarget | null): Editable | null => {
   const el = t as HTMLElement | null
   return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? (el as Editable) : null
 }
+const isTrap = (el: Editable) => el.dataset.scanTrap != null
 
 let kbuf = ''
 let klast = 0
+let kTimer: number | undefined
+let lastKeyWasIme = false // last keydown was 229/"Unidentified" → trust keypress for the char
+
 interface Burst { text: string; last: number }
 const bursts = new WeakMap<Editable, Burst>()
+const snap = new WeakMap<Editable, string>() // last known value per field (for diffing)
 let trapTimer: number | undefined
 let installed = false
 
@@ -52,71 +56,121 @@ function emit(code: string, el: Editable | null) {
   if (el) {
     bursts.delete(el)
     // Clean the code out of the field so it doesn't linger (traps are always cleared).
-    if (el.dataset.scanTrap != null) setNativeValue(el, '')
+    if (isTrap(el)) setNativeValue(el, '')
     else if (el.dataset.keepScan == null && el.value.endsWith(code)) setNativeValue(el, el.value.slice(0, -code.length))
   }
   window.dispatchEvent(new CustomEvent('barcode', { detail: { code, source: 'hid' } }))
 }
 
-function onKeyDown(e: KeyboardEvent) {
+/** Enter/Tab (however it arrived): emit the best buffer we have. */
+function finalize(el: Editable | null, e?: Event): boolean {
+  const now = performance.now()
+  window.clearTimeout(kTimer)
+  if (kbuf.length >= MIN_LEN && now - klast <= INPUT_GAP_MS) {
+    const code = kbuf
+    kbuf = ''
+    e?.preventDefault()
+    emit(code, el)
+    return true
+  }
+  kbuf = ''
+  const b = el ? bursts.get(el) : undefined
+  if (el && b && b.text.length >= MIN_LEN && now - b.last <= INPUT_GAP_MS + 100) {
+    e?.preventDefault()
+    emit(b.text, el)
+    return true
+  }
+  return false
+}
+
+function pushKey(ch: string) {
   const now = performance.now()
   if (now - klast > KEY_GAP_MS) kbuf = ''
   klast = now
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    const el = editable(e.target)
-    const burst = el ? bursts.get(el) : undefined
-    if (kbuf.length >= MIN_LEN) {
-      const code = kbuf
-      kbuf = ''
-      e.preventDefault()
-      emit(code, el)
-    } else if (el && burst && burst.text.length >= MIN_LEN && now - burst.last <= INPUT_GAP_MS) {
-      // Android IME path: the characters never reached keydown, but the burst
-      // landed in the focused input just before this Enter.
-      e.preventDefault()
-      emit(burst.text, el)
-    }
-    kbuf = ''
-    return
+  kbuf += ch
+  // Scanners with no Enter suffix: flush a long fast burst after a short idle.
+  window.clearTimeout(kTimer)
+  if (kbuf.length >= KBUF_FLUSH_LEN) {
+    kTimer = window.setTimeout(() => {
+      if (kbuf.length >= KBUF_FLUSH_LEN) { const code = kbuf; kbuf = ''; emit(code, editable(document.activeElement)) }
+    }, TRAP_IDLE_MS)
   }
-  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) kbuf += e.key
+}
+
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Unidentified' || e.keyCode === 229) { lastKeyWasIme = true; return }
+  lastKeyWasIme = false
+  if (e.key === 'Enter' || e.key === 'Tab') { finalize(editable(e.target), e); return }
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (/\s/.test(e.key)) { kbuf = ''; return }
+    pushKey(e.key)
+  } else if (e.key.length > 1) {
+    klast = performance.now() // navigation keys break a burst window but keep timing sane
+  }
+}
+
+/** Rescue path: some Android keyboards blank out keydown but still fire keypress with the char. */
+function onKeyPress(e: KeyboardEvent) {
+  const which = e.which || e.keyCode
+  if (e.key === 'Enter' || which === 13) { finalize(editable(e.target), e); return }
+  if (!lastKeyWasIme) return // real keydown already captured this char
+  const ch = e.key && e.key.length === 1 ? e.key : which ? String.fromCharCode(which) : ''
+  if (ch && !/\s/.test(ch)) pushKey(ch)
 }
 
 /** Some scanners terminate with a newline that arrives as an input mutation, not a key. */
 function onBeforeInput(e: Event) {
   const ie = e as InputEvent
   if (ie.inputType !== 'insertLineBreak') return
-  const el = editable(e.target)
-  if (!el) return
-  const burst = bursts.get(el)
-  if (burst && burst.text.length >= MIN_LEN && performance.now() - burst.last <= INPUT_GAP_MS) {
-    e.preventDefault()
-    emit(burst.text, el)
-  }
+  finalize(editable(e.target), e)
 }
 
+/** IME path: diff the field value on every input event — survives composition/autocorrect. */
 function onInput(e: Event) {
-  const ie = e as InputEvent
   const el = editable(e.target)
   if (!el) return
-  const data = ie.data ?? ''
-  // Deletions, IME junk, whitespace or our own synthetic events reset the burst —
-  // barcodes are inserted as clean printable characters.
-  if (!data || /\s/.test(data) || typeof ie.inputType !== 'string' || !ie.inputType.startsWith('insert')) {
-    bursts.delete(el)
-    scheduleTrapFlush(el)
+  const cur = el.value
+  const prev = snap.get(el) ?? ''
+  snap.set(el, cur)
+  if (cur === prev) {
+    // No visible change — e.g. the scanner's CR suffix, which <input> sanitizes away.
+    if ((e as InputEvent).inputType === 'insertLineBreak') finalize(el)
+    else if (isTrap(el)) scheduleTrapFlush(el)
     return
   }
-  const now = performance.now()
-  const b = bursts.get(el)
-  if (!b || now - b.last > INPUT_GAP_MS) bursts.set(el, { text: data, last: now })
-  else { b.text += data; b.last = now }
-  scheduleTrapFlush(el)
+  if (cur.length < prev.length) { // deletion / clear
+    bursts.delete(el)
+    if (isTrap(el)) scheduleTrapFlush(el)
+    return
+  }
+  let inserted: string
+  if (cur.startsWith(prev)) inserted = cur.slice(prev.length)
+  else { // composition rewrote earlier text — take everything past the common prefix
+    let i = 0
+    while (i < prev.length && prev[i] === cur[i]) i++
+    inserted = cur.slice(i)
+  }
+  const nl = inserted.search(/[\r\n]/)
+  if (nl >= 0) { // newline committed as text = the scanner's Enter suffix
+    appendBurst(el, inserted.slice(0, nl))
+    finalize(el)
+    return
+  }
+  if (/\s/.test(inserted)) { bursts.delete(el); return } // barcodes have no spaces
+  appendBurst(el, inserted)
+  if (isTrap(el)) scheduleTrapFlush(el)
 }
 
-/** The trap has no user typing, so scans there may finalize on idle (no-suffix scanners). */
+function appendBurst(el: Editable, text: string) {
+  if (!text) return
+  const now = performance.now()
+  const b = bursts.get(el)
+  if (!b || now - b.last > INPUT_GAP_MS) bursts.set(el, { text, last: now })
+  else { b.text += text; b.last = now }
+}
+
+/** Trap fields have no human typing, so scans there may finalize on idle (no-suffix scanners). */
 function scheduleTrapFlush(el: Editable) {
-  if (el.dataset.scanTrap == null) return
   window.clearTimeout(trapTimer)
   trapTimer = window.setTimeout(() => {
     const b = bursts.get(el)
@@ -126,12 +180,19 @@ function scheduleTrapFlush(el: Editable) {
   }, TRAP_IDLE_MS)
 }
 
+function onFocusIn(e: FocusEvent) {
+  const el = editable(e.target)
+  if (el) { snap.set(el, el.value); bursts.delete(el) }
+}
+
 export function installHidScanner() {
   if (installed || typeof window === 'undefined') return
   installed = true
   window.addEventListener('keydown', onKeyDown, true)
+  window.addEventListener('keypress', onKeyPress, true)
   window.addEventListener('beforeinput', onBeforeInput, true)
   window.addEventListener('input', onInput, true)
+  window.addEventListener('focusin', onFocusIn, true)
 }
 
 export function emitBarcode(code: string, source: 'camera' | 'hid' | 'manual' = 'manual') {

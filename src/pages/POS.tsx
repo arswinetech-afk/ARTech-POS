@@ -97,8 +97,8 @@ export default function POS() {
   const handleCode = (code: string) => {
     const c = code.trim()
     const matches = products.filter((p) => p.barcode === c)
-    if (matches.length === 1) { addProduct(matches[0]); return true }
-    if (matches.length > 1) { setPick(matches); return true }
+    if (matches.length === 1) { addProduct(matches[0]); setQ(''); return true }
+    if (matches.length > 1) { setPick(matches); setQ(''); return true }
     beep(false)
     toast.error('Barcode not found', c)
     setQ(c)
