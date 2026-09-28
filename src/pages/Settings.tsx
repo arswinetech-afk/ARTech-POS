@@ -211,12 +211,30 @@ export default function Settings() {
 function ScannerTest() {
   const [last, setLast] = useState<{ code: string; source: string } | null>(null)
   const [raw, setRaw] = useState('')
+  const [diag, setDiag] = useState({ keys: 0, ime: 0, press: 0, text: 0, lastEv: '' })
   useBarcode((code, source) => { setLast({ code, source }); setRaw(''); beep(true) })
+  // Event probe: counts every keyboard/text event reaching the page, so we can tell
+  // "scanner not sending anything" apart from "app not recognising it".
+  useEffect(() => {
+    const kd = (e: KeyboardEvent) => setDiag((d) => ({ ...d, keys: d.keys + 1, ime: d.ime + (e.key === 'Unidentified' || e.keyCode === 229 ? 1 : 0), lastEv: e.key === 'Unidentified' || e.keyCode === 229 ? 'key (IME)' : `key ${JSON.stringify(e.key)}` }))
+    const kp = (e: KeyboardEvent) => setDiag((d) => ({ ...d, press: d.press + 1, lastEv: `press ${JSON.stringify(e.key)}` }))
+    const ip = (e: Event) => {
+      const t = e.target as HTMLInputElement | null
+      if (!t || t.dataset?.scanTrap == null) return
+      const ie = e as InputEvent
+      setDiag((d) => ({ ...d, text: d.text + 1, lastEv: `text ${JSON.stringify(ie.data ?? ie.inputType ?? '')}` }))
+    }
+    window.addEventListener('keydown', kd, true)
+    window.addEventListener('keypress', kp, true)
+    window.addEventListener('input', ip, true)
+    return () => { window.removeEventListener('keydown', kd, true); window.removeEventListener('keypress', kp, true); window.removeEventListener('input', ip, true) }
+  }, [])
   return (
     <div className="space-y-2">
       <Field label="Test your scanner" hint="Tap the box (if the keyboard pops up just ignore it), then pull the trigger on any barcode.">
         <Input data-scan-trap="" placeholder="Tap here, then scan…" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onInput={(e) => setRaw((e.target as HTMLInputElement).value)} />
       </Field>
+      <div className="text-[11px] text-slate-400 font-mono">engine v3 · keys {diag.keys}{diag.ime > 0 ? ` (${diag.ime} via IME)` : ''} · press {diag.press} · text {diag.text}{diag.lastEv ? ` · last: ${diag.lastEv}` : ''}</div>
       {last ? (
         <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800">
           ✅ Scanner is working — read <b className="font-mono">{last.code}</b> via {last.source === 'hid' ? 'Bluetooth/USB scanner' : last.source === 'camera' ? 'camera' : last.source}.
@@ -224,7 +242,12 @@ function ScannerTest() {
       ) : raw ? (
         <div className="text-xs rounded-lg px-3 py-2 bg-sky-50 text-sky-800">Receiving: <b className="font-mono">{raw}</b>…</div>
       ) : (
-        <div className="text-xs text-slate-400">If nothing at all appears after scanning, the scanner is in the wrong mode — check its manual for “HID / keyboard mode” (many switch modes by scanning a setup barcode).</div>
+        <div className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2 space-y-1">
+          <div className="font-semibold">Scanner beeps but nothing appears (counters stay at 0)?</div>
+          <div>Then the scanner isn't sending data to the phone at all — it is not an app issue. Quick check: open any notes app and scan; if no digits appear there either, fix the scanner itself:</div>
+          <div>1. <b>Inventory/storage mode is on</b> — the scanner saves codes internally instead of sending them. Scan the “Normal mode” / “Instant upload” barcode in its manual.</div>
+          <div>2. <b>It's transmitting to its 2.4G USB dongle</b> instead of Bluetooth — scan the “Bluetooth HID mode” setup barcode in the manual, then reconnect.</div>
+        </div>
       )}
     </div>
   )
