@@ -219,22 +219,24 @@ function ScannerTest() {
     const kd = (e: KeyboardEvent) => setDiag((d) => ({ ...d, keys: d.keys + 1, ime: d.ime + (e.key === 'Unidentified' || e.keyCode === 229 ? 1 : 0), lastEv: e.key === 'Unidentified' || e.keyCode === 229 ? 'key (IME)' : `key ${JSON.stringify(e.key)}` }))
     const kp = (e: KeyboardEvent) => setDiag((d) => ({ ...d, press: d.press + 1, lastEv: `press ${JSON.stringify(e.key)}` }))
     const ip = (e: Event) => {
-      const t = e.target as HTMLInputElement | null
-      if (!t || t.dataset?.scanTrap == null) return
+      const t = e.target as HTMLElement | null
+      if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return
       const ie = e as InputEvent
       setDiag((d) => ({ ...d, text: d.text + 1, lastEv: `text ${JSON.stringify(ie.data ?? ie.inputType ?? '')}` }))
     }
+    const cu = (e: CompositionEvent) => setDiag((d) => ({ ...d, text: d.text + 1, lastEv: `comp ${JSON.stringify(e.data ?? '')}` }))
     window.addEventListener('keydown', kd, true)
     window.addEventListener('keypress', kp, true)
     window.addEventListener('input', ip, true)
-    return () => { window.removeEventListener('keydown', kd, true); window.removeEventListener('keypress', kp, true); window.removeEventListener('input', ip, true) }
+    window.addEventListener('compositionupdate', cu, true)
+    return () => { window.removeEventListener('keydown', kd, true); window.removeEventListener('keypress', kp, true); window.removeEventListener('input', ip, true); window.removeEventListener('compositionupdate', cu, true) }
   }, [])
   return (
     <div className="space-y-2">
       <Field label="Test your scanner" hint="Tap the box (if the keyboard pops up just ignore it), then pull the trigger on any barcode.">
         <Input data-scan-trap="" placeholder="Tap here, then scan…" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onInput={(e) => setRaw((e.target as HTMLInputElement).value)} />
       </Field>
-      <div className="text-[11px] text-slate-400 font-mono">engine v3 · keys {diag.keys}{diag.ime > 0 ? ` (${diag.ime} via IME)` : ''} · press {diag.press} · text {diag.text}{diag.lastEv ? ` · last: ${diag.lastEv}` : ''}</div>
+      <div className="text-[11px] text-slate-400 font-mono">probe v4 · keys {diag.keys}{diag.ime > 0 ? ` (${diag.ime} via IME)` : ''} · press {diag.press} · text {diag.text}{diag.lastEv ? ` · last: ${diag.lastEv}` : ''}</div>
       {last ? (
         <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800">
           ✅ Scanner is working — read <b className="font-mono">{last.code}</b> via {last.source === 'hid' ? 'Bluetooth/USB scanner' : last.source === 'camera' ? 'camera' : last.source}.
