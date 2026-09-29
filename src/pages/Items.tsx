@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { Search, Plus, ScanLine, Package, Upload, Download, PackagePlus, Trash2, X } from 'lucide-react'
+import { Search, Plus, ScanLine, Package, Upload, Download, PackagePlus, Trash2, X, Tag } from 'lucide-react'
 import { db } from '../lib/db'
 import { useAppStore, usePermission } from '../store/app'
 import { Button, Input, Field, Select, Modal, MoneyInput, EmptyState, Chip, Confirm, Segmented, PageHeader, Textarea } from '../components/ui'
@@ -69,12 +69,32 @@ export default function Items() {
 
   const exportCSV = () => downloadText(`inventory-products-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(products.map((p) => ({ Name: p.name, Barcode: p.barcode || '', Category: p.category || '', 'Purchase Price': p.cost, 'Selling Price': p.price, Stock: p.stock, Unit: p.unit || '', Description: p.description || '' }))))
 
+  // Big printable barcode labels for items whose factory codes are too small/dense
+  // for entry-level scanners (cigarette packs, sachets…). Uses the current filter.
+  const [labelsBusy, setLabelsBusy] = useState(false)
+  const printLabels = async () => {
+    if (labelsBusy || !store) return
+    setLabelsBusy(true)
+    try {
+      const m = await import('../lib/barcodeSheetPdf')
+      const printable = list.filter((p) => m.normalizeEan(p.barcode))
+      if (!printable.length) { toast.info('No printable barcodes', 'None of the items in the current filter have a standard EAN/UPC barcode. Search or pick a category first.'); return }
+      const doc = await m.buildBarcodeSheetPdf(printable.slice(0, m.MAX_LABELS).map((p) => ({ name: p.name, price: Number(p.price), barcode: p.barcode as string })), store.name)
+      const { savePdf } = await import('../lib/stockReport')
+      savePdf(doc.output('blob'), m.barcodeSheetFilename())
+      const n = Math.min(printable.length, m.MAX_LABELS)
+      const skipped = list.length - printable.length
+      toast.success(`${num(n)} label${n === 1 ? '' : 's'} ready to print`, `${doc.getNumberOfPages()} A4 page${doc.getNumberOfPages() === 1 ? '' : 's'}${printable.length > m.MAX_LABELS ? ` · capped at ${m.MAX_LABELS}` : ''}${skipped > 0 ? ` · ${num(skipped)} skipped (no standard barcode)` : ''}`)
+    } catch (e) { toast.error('Could not create labels', (e as Error).message) } finally { setLabelsBusy(false) }
+  }
+
   if (!store) return null
   return (
     <div className="space-y-3">
       <PageHeader title="Items" subtitle={canSeeCost ? `${num(stats.count)} products · stock value ${peso(stats.value)}` : `${num(stats.count)} products`} action={<>
         {canImport && <Button variant="outline" size="sm" icon={<Upload size={16} />} onClick={() => navigate('/settings/import')} className="hidden sm:inline-flex">Import</Button>}
         {canSeeCost && <Button variant="outline" size="sm" icon={<Download size={16} />} onClick={exportCSV} className="hidden sm:inline-flex">Export</Button>}
+        <Button variant="outline" size="sm" icon={<Tag size={16} />} onClick={printLabels} loading={labelsBusy}>Labels</Button>
         {canManage && <Button size="sm" icon={<Plus size={16} />} onClick={() => setEditing('new')}>Add</Button>}
       </>} />
 
